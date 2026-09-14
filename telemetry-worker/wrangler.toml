@@ -1,0 +1,7 @@
+name = "stemkit-stats"
+main = "src/worker.js"
+compatibility_date = "2026-01-01"
+
+[[kv_namespaces]]
+binding = "DB"
+id = "f2d9e609846d4bdbb9d3afc725bd5639"

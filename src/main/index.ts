@@ -25,6 +25,7 @@ import { startJob, cancelJob, searchYouTube } from './pipeline'
 import { initUpdater } from './updater'
 import { runSmoke } from './smoke'
 import { getThumb, clearThumbMemo } from './thumbs'
+import { maybePing } from './telemetry'
 
 let mainWindow: BrowserWindow | null = null
 let staticServer: Server | null = null
@@ -235,6 +236,8 @@ app.whenReady().then(async () => {
     else void ensureGpuEngine()
   })
   initUpdater()
+  // anonymous usage heartbeat: one POST per install per day
+  maybePing()
   ipcMain.handle('open-external', (_e, url: string) => {
     if (/^https:\/\/(www\.)?(youtube\.com|youtu\.be)\//.test(url)) {
       shell.openExternal(url)
