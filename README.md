@@ -22,7 +22,11 @@ docker run -d --name stemkit --gpus all -p 8080:8080   -v /path/to/stemkit-data:
 
 Then open `http://SERVER:8080`. Leave out `--gpus all` to split on the CPU.
 
-**Unraid:** add the template from `https://raw.githubusercontent.com/adman234/stemkit/main/unraid/stemkit.xml` (Docker tab, Template repositories), or copy `unraid/stemkit.xml` to `/boot/config/plugins/dockerMan/templates-user/`. GPU splits need the Nvidia Driver plugin.
+**Unraid:** from the Unraid terminal, fetch the template, then go to Docker, Add Container, and pick `stemkit` from the template list. GPU splits need the Nvidia Driver plugin.
+
+```bash
+wget -O /boot/config/plugins/dockerMan/templates-user/my-stemkit.xml https://raw.githubusercontent.com/adman234/stemkit/main/unraid/stemkit.xml
+```
 
 | Variable | Default | What it does |
 | --- | --- | --- |
