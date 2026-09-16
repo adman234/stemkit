@@ -9,7 +9,7 @@ WORKDIR /src
 ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
-COPY tsconfig.json tsconfig.web.json tsconfig.server.json tsconfig.webclient.json vite.web.config.mts ./
+COPY tsconfig*.json vite.web.config.mts ./
 COPY scripts ./scripts
 COPY build ./build
 COPY src ./src
