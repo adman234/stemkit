@@ -1,0 +1,12 @@
+/* The renderer's stylesheet, compiled with the renderer sources in scope.
+   Tailwind only scans the Vite root (src/web) by itself, so without the
+   @source line almost every utility class would be missing. The renderer's
+   own `import './index.css'` is aliased to this file in vite.web.config.mts */
+@import "../renderer/src/index.css";
+@source "../renderer/src";
+
+/* the sidebar header leaves room for the macOS window buttons, which a
+   browser tab does not have */
+body.web .drag-region.pl-\[80px\] {
+  padding-left: 1.25rem;
+}

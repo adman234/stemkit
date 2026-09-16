@@ -18,7 +18,11 @@
     "dist": "node scripts/run.cjs dist",
     "dist:win": "node scripts/run.cjs dist:win",
     "dist:linux": "node scripts/run.cjs dist:linux",
-    "dist:all": "node scripts/run.cjs dist:all"
+    "dist:all": "node scripts/run.cjs dist:all",
+    "web:build": "vite build --config vite.web.config.mts && node scripts/build-server.mjs",
+    "web:dev": "vite --config vite.web.config.mts",
+    "web:server": "node scripts/build-server.mjs && node out/server/index.js",
+    "web:typecheck": "tsc -p tsconfig.server.json && tsc -p tsconfig.webclient.json"
   },
   "dependencies": {
     "electron-updater": "^6.8.9"
@@ -32,6 +36,7 @@
     "electron": "^33.3.1",
     "electron-builder": "^25.1.8",
     "electron-vite": "^2.3.0",
+    "esbuild": "^0.21.5",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwindcss": "^4.0.6",

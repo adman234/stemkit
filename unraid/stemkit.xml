@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>stemkit</Name>
+  <Repository>ghcr.io/adman234/stemkit:latest</Repository>
+  <Registry>https://github.com/adman234/stemkit/pkgs/container/stemkit</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/adman234/stemkit/issues</Support>
+  <Project>https://github.com/adman234/stemkit</Project>
+  <Overview>StemKit in your browser. Search YouTube or paste a link, pick the instruments you want, and the server splits the song into stems (vocals, drums, bass, guitar, piano, other). Play the result like a mini mixer with the video beside a fader for every stem, or download stems as WAV. Separation runs on an NVIDIA GPU when one is passed through (install the Nvidia Driver plugin, driver 570 or newer), otherwise on the CPU, just slower. The optional studio vocals model (913 MB) and fine-tuned instruments model (320 MB) download into the data folder when enabled in Settings. There is no login unless you set a password below, so keep it on your LAN or behind a reverse proxy.</Overview>
+  <Category>MediaApp:Music Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8080]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/adman234/stemkit/main/unraid/stemkit.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/adman234/stemkit/main/build/icon.png</Icon>
+  <ExtraParams>--runtime=nvidia</ExtraParams>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires>For GPU splits install the Nvidia Driver plugin. No GPU? Remove --runtime=nvidia from Extra Parameters and it runs on the CPU.</Requires>
+  <Config Name="WebUI port" Target="8080" Default="8080" Mode="tcp" Description="Web interface." Type="Port" Display="always" Required="true" Mask="false">8080</Config>
+  <Config Name="Data" Target="/config" Default="/mnt/user/appdata/stemkit" Mode="rw" Description="Song library (split stems take about 20 MB per stem per minute of audio), settings, thumbnails and downloaded models. Drop a Netscape format cookies.txt exported from a logged in YouTube browser session here if YouTube starts asking to sign in to confirm you are not a bot." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/stemkit</Config>
+  <Config Name="NVIDIA_VISIBLE_DEVICES" Target="NVIDIA_VISIBLE_DEVICES" Default="all" Mode="" Description="Which GPU to use: all, or a GPU UUID from the Nvidia Driver plugin page." Type="Variable" Display="always" Required="false" Mask="false">all</Config>
+  <Config Name="Password" Target="STEMKIT_PASSWORD" Default="" Mode="" Description="Optional. When set, the browser asks for it (HTTP basic auth). Leave empty for no login." Type="Variable" Display="always" Required="false" Mask="true"></Config>
+  <Config Name="Username" Target="STEMKIT_USERNAME" Default="" Mode="" Description="Optional username to go with the password. Empty accepts any username." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="Update yt-dlp on start" Target="YTDLP_AUTO_UPDATE" Default="true" Mode="" Description="Installs the newest yt-dlp into the data folder at every container start. YouTube changes often break older versions." Type="Variable" Display="advanced" Required="false" Mask="false">true</Config>
+  <Config Name="Vocals model attention" Target="STEMKIT_ATTENTION" Default="efficient" Mode="" Description="GPU attention kernel for the studio vocals model: efficient, flash or math. efficient is the safe default; flash can be slightly faster but has produced garbled output on some newer cards." Type="Variable" Display="advanced" Required="false" Mask="false">efficient</Config>
+  <Config Name="NVIDIA_DRIVER_CAPABILITIES" Target="NVIDIA_DRIVER_CAPABILITIES" Default="compute,utility" Mode="" Description="Leave as compute,utility." Type="Variable" Display="advanced" Required="false" Mask="false">compute,utility</Config>
+  <Config Name="PUID" Target="PUID" Default="99" Mode="" Description="User ID that owns created files (99 = nobody)." Type="Variable" Display="advanced" Required="false" Mask="false">99</Config>
+  <Config Name="PGID" Target="PGID" Default="100" Mode="" Description="Group ID that owns created files (100 = users)." Type="Variable" Display="advanced" Required="false" Mask="false">100</Config>
+  <Config Name="UMASK" Target="UMASK" Default="022" Mode="" Description="File creation mask." Type="Variable" Display="advanced" Required="false" Mask="false">022</Config>
+</Container>

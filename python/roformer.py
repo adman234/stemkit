@@ -142,6 +142,31 @@ def resolve_device():
     return "cpu", False
 
 
+# PyTorch attention kernels the transformer may use on CUDA, as
+# (enable_flash, enable_math, enable_mem_efficient). The vendored Attend picks
+# flash-only on Linux GPUs with compute capability 8.0+, but flash kernels
+# have produced garbage output on some newer cards (Blackwell), so
+# STEMKIT_ATTENTION can pin one: flash, efficient or math. Unset keeps the
+# vendored choice
+ATTENTION_BACKENDS = {
+    "flash": (True, False, False),
+    "efficient": (False, False, True),
+    "math": (False, True, False),
+}
+
+
+def apply_attention_backend(model):
+    choice = os.environ.get("STEMKIT_ATTENTION", "").strip().lower()
+    if choice not in ATTENTION_BACKENDS:
+        return
+    from models.bs_roformer.attend import Attend, FlashAttentionConfig
+
+    config = FlashAttentionConfig(*ATTENTION_BACKENDS[choice])
+    for module in model.modules():
+        if isinstance(module, Attend) and module.cuda_config is not None:
+            module.cuda_config = config
+
+
 def load_model(ckpt_path, device, use_half):
     from models.bs_roformer.mel_band_roformer import MelBandRoformer
 
@@ -156,6 +181,7 @@ def load_model(ckpt_path, device, use_half):
         # band_split accumulates large stft magnitudes and overflows fp16
         model.band_split.to(torch.float32)
     model.eval()
+    apply_attention_backend(model)
     return model
 
 

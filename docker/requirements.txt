@@ -1,0 +1,13 @@
+# Python engine for the web/Docker build. torch and torchaudio are installed
+# first from the PyTorch CUDA index (see Dockerfile), so pip keeps them.
+demucs==4.0.1
+numpy==1.26.4
+beartype==0.22.9
+einops==0.8.2
+rotary-embedding-torch==0.9.1
+# imported by the vendored roformer attention module
+packaging
+# unpinned on purpose: YouTube breaks old releases, and the container also
+# refreshes these on start (YTDLP_AUTO_UPDATE)
+yt-dlp
+yt-dlp-ejs

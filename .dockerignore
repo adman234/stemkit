@@ -1,0 +1,14 @@
+.git
+.github
+node_modules
+out
+release
+extras
+docs
+website
+telemetry-worker
+embed-test
+unraid
+**/__pycache__
+**/*.pyc
+*.log

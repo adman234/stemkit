@@ -12,6 +12,38 @@ Everything runs locally — no accounts, no API keys. Your songs, searches and a
   <img src="docs/stemkit.png" alt="StemKit splitting Queen's Bohemian Rhapsody into six stems — video player, presets and color-coded waveform lanes" width="100%" />
 </p>
 
+## Web version (Docker / Unraid)
+
+This fork adds a browser version of StemKit that runs as a server in a container. It is the same React UI and the same separation pipeline as the desktop app, served over HTTP instead of wrapped in Electron, so any browser on your network can search, split, play and download stems. The library lives on the server and is shared by every browser.
+
+```bash
+docker run -d --name stemkit --gpus all -p 8080:8080   -v /path/to/stemkit-data:/config ghcr.io/adman234/stemkit:latest
+```
+
+Then open `http://SERVER:8080`. Leave out `--gpus all` to split on the CPU.
+
+**Unraid:** add the template from `https://raw.githubusercontent.com/adman234/stemkit/main/unraid/stemkit.xml` (Docker tab, Template repositories), or copy `unraid/stemkit.xml` to `/boot/config/plugins/dockerMan/templates-user/`. GPU splits need the Nvidia Driver plugin.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `STEMKIT_PASSWORD` | empty | Turns on HTTP basic auth. There is no login otherwise, so keep the port on your LAN or behind a reverse proxy |
+| `STEMKIT_USERNAME` | empty | Username for basic auth. Empty accepts any username |
+| `YTDLP_AUTO_UPDATE` | `true` | Installs the newest yt-dlp into `/config/python-overrides` at start |
+| `STEMKIT_ATTENTION` | `efficient` | CUDA attention kernel for the studio vocals model: `efficient`, `flash` or `math` |
+| `PUID` / `PGID` / `UMASK` | `99` / `100` / `022` | Owner and mask for files written to `/config` |
+| `PORT` | `8080` | Port the server listens on inside the container |
+
+Everything persistent is under `/config`: `songs/` (the library), `models/` (optional checkpoints and the demucs weights), `settings.json`, `library.json` and `thumbs/`. If YouTube starts answering with "sign in to confirm you're not a bot", export a Netscape format `cookies.txt` from a logged in browser and put it at `/config/cookies.txt`.
+
+Differences from the desktop app:
+
+- Python, CUDA PyTorch (2.8, CUDA 12.8, so RTX 50 series cards work) and ffmpeg are baked into the image, so there is no first-run setup download. The host needs NVIDIA driver 570 or newer for GPU splits.
+- GPU splitting is switched on automatically the first time the server starts with a GPU visible.
+- Export downloads through the browser: a single stem as WAV, or every stem plus the full mix as a ZIP.
+- No auto-updater (pull a new image instead) and no usage ping.
+
+Developing the web version: `npm run web:build` builds the UI into `out/web` and the server into `out/server`. `npm run web:server` rebuilds and starts the server on port 8080, and `npm run web:dev` runs a Vite dev server that proxies `/api` to it. Point the server at a local Python environment with `STEMKIT_PYTHON`, at ffmpeg with `STEMKIT_FFMPEG`, and at a data folder with `STEMKIT_DATA`. The server code is in `src/server` and reuses the desktop pipeline in `src/main` unchanged (see `scripts/build-server.mjs`).
+
 ## Features
 
 - Built-in YouTube search, or paste a link

@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.web.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["src/web/**/*", "src/renderer/src/**/*", "src/shared/**/*", "src/preload/index.d.ts", "vite.web.config.mts"]
+}
