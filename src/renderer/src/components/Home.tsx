@@ -180,7 +180,7 @@ export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettin
 
   return (
     <div className="h-full flex flex-col items-center px-8 pt-[6vh] pb-6 overflow-y-auto">
-      <div className="w-full max-w-2xl">
+      <div className="w-full max-w-2xl xl:max-w-4xl">
         <h1 className="text-center text-[30px] font-bold tracking-tight leading-tight bg-gradient-to-r from-violet-300 via-white to-emerald-200 bg-clip-text text-transparent">
           Turn any YouTube track into stems.
         </h1>

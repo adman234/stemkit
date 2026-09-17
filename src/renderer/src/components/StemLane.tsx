@@ -11,6 +11,29 @@ export interface StemMeta {
 
 const BUCKETS = 1600
 
+// faders run past unity so a stem can be pushed louder than the mix allows;
+// everything above 1 is drawn in red, because summing boosted stems can clip
+export const MAX_GAIN = 2
+const BOOST_COLOR = '#FB7185'
+
+function fmtGain(volume: number): string {
+  const db = 20 * Math.log10(volume)
+  return `${db > 0 ? '+' : ''}${db.toFixed(1)} dB`
+}
+
+function faderTrack(volume: number, color: string): string {
+  const pct = (volume / MAX_GAIN) * 100
+  const unity = 100 / MAX_GAIN
+  const rest = 'rgba(255,255,255,0.14)'
+  if (volume <= 1) {
+    return `linear-gradient(to right, ${color} ${pct}%, ${rest} ${pct}%)`
+  }
+  return (
+    `linear-gradient(to right, ${color} ${unity}%, ${BOOST_COLOR} ${unity}%, ` +
+    `${BOOST_COLOR} ${pct}%, ${rest} ${pct}%)`
+  )
+}
+
 function computePeaks(buffer: AudioBuffer): Float32Array {
   const out = new Float32Array(BUCKETS)
   const data = buffer.getChannelData(0)
@@ -161,18 +184,34 @@ export function StemLane({
         className="no-drag flex-1 h-14 rounded-lg cursor-pointer min-w-0"
       />
 
-      <input
-        type="range"
-        min={0}
-        max={1}
-        step={0.01}
-        value={volume}
-        onChange={(e) => onVolume(parseFloat(e.target.value))}
-        className="no-drag w-24 shrink-0"
-        style={{
-          background: `linear-gradient(to right, ${meta.color} ${volume * 100}%, rgba(255,255,255,0.14) ${volume * 100}%)`
-        }}
-      />
+      <span className="shrink-0 flex items-center gap-2">
+        <span className="relative flex items-center w-24 2xl:w-36">
+          <input
+            type="range"
+            min={0}
+            max={MAX_GAIN}
+            step={0.01}
+            value={volume}
+            onChange={(e) => onVolume(parseFloat(e.target.value))}
+            onDoubleClick={() => onVolume(1)}
+            title={`${fmtGain(volume)} (double click for 0 dB)`}
+            className="no-drag w-full"
+            style={{ background: faderTrack(volume, meta.color) }}
+          />
+          {/* unity mark: everything to its right is a boost */}
+          <span
+            className="pointer-events-none absolute top-1/2 -translate-y-1/2 w-px h-2.5 bg-white/30"
+            style={{ left: `${100 / MAX_GAIN}%` }}
+          />
+        </span>
+        <span
+          className={`w-12 text-[10px] font-mono tabular-nums text-right transition-colors ${
+            volume > 1 ? 'text-rose-300' : 'text-transparent'
+          }`}
+        >
+          {fmtGain(volume)}
+        </span>
+      </span>
 
       {onExport && (
         <button
