@@ -106,7 +106,8 @@ const api: StemKitApi = {
     return { saved: true }
   },
   searchYouTube: (query) => request<SearchResult[]>('GET', `/api/search?q=${encodeURIComponent(query)}`),
-  startJob: (url, model, stems) => request<{ started: boolean }>('POST', '/api/jobs', { url, model, stems }),
+  startJob: (url, model, stems, options) =>
+    request<{ started: boolean }>('POST', '/api/jobs', { url, model, stems, options }),
   cancelJob: async (videoId) => {
     await request('POST', '/api/jobs/cancel', { videoId })
   },

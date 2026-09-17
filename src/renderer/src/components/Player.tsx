@@ -8,6 +8,7 @@ import { YouTubeHost, type YTState } from '../lib/youtube'
 import { StemLane } from './StemLane'
 import { Transport, type PresetId } from './Transport'
 import { DownloadIcon } from './Icons'
+import { DRUM_KIT, splitLabel } from '../../../shared/engines'
 
 type BufferCacheMap = BufferMap
 
@@ -257,7 +258,8 @@ export function Player({ song, settings }: Props): React.ReactElement {
     else if (p === 'karaoke')
       setSolos(new Set<StemId>(stemMeta.filter((s) => s.id !== 'vocals').map((s) => s.id)))
     else if (p === 'acapella') setSolos(new Set<StemId>(['vocals']))
-    else if (p === 'drumnbass') setSolos(new Set<StemId>(['drums', 'bass']))
+    else if (p === 'drumnbass')
+      setSolos(new Set<StemId>((['drums', ...DRUM_KIT, 'bass'] as StemId[]).filter((id) => stemMeta.some((s) => s.id === id))))
   }
 
   const toggleMute = (id: StemId): void => {
@@ -337,6 +339,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
                   <p className="text-xs text-white/45 mt-1.5 font-mono truncate">
                     {fmtTime(song.duration)} · added {addedLabel}
                     {song.took ? ` · split in ${fmtTime(song.took)}` : ''}
+                    {song.options ? ` · ${splitLabel(song.options)}` : ''}
                   </p>
                 </div>
                 <span className="shrink-0 text-xs px-3 py-1.5 rounded-full bg-white/5 text-white/50 font-medium">
@@ -351,7 +354,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
               )}
 
               <div className="flex items-center gap-x-6 gap-y-2 flex-wrap">
-                {stemMeta.map((meta) => (
+                {stemMeta.length <= 6 && stemMeta.map((meta) => (
                   <span key={meta.id} className="flex items-center gap-2 text-[14px] text-white/75">
                     <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: meta.color }} />
                     <span className="capitalize">{meta.label}</span>

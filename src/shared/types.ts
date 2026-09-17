@@ -1,4 +1,41 @@
-export type StemId = 'vocals' | 'drums' | 'bass' | 'other' | 'piano' | 'guitar'
+export type StemId =
+  | 'vocals'
+  | 'drums'
+  | 'bass'
+  | 'other'
+  | 'piano'
+  | 'guitar'
+  // pieces of the drums stem, when the drum kit split is on
+  | 'kick'
+  | 'snare'
+  | 'toms'
+  | 'hihat'
+  | 'ride'
+  | 'crash'
+
+// web version: which separation engine a split uses (see shared/engines.ts)
+export type EngineId = 'quick' | 'best'
+
+export interface SplitOptions {
+  engine: EngineId
+  // instruments asked for: vocals, drums, bass, guitar, piano, other
+  stems: StemId[]
+  // dedicated vocal model (Mel-Band Roformer) in addition to the engine
+  studioVocals: boolean
+  // denser overlap (Demucs: two shifted passes); small gain, about twice the time
+  secondPass: boolean
+  // split the drums stem into kick, snare, toms, hi-hat, ride and crash
+  drumKit: boolean
+}
+
+export interface ModelStatus {
+  id: string
+  name: string
+  sizeMb: number
+  ready: boolean
+  downloading: boolean
+  pct?: number
+}
 
 export const DEFAULT_STEMS: string[] = ['vocals', 'drums', 'bass', 'other']
 
@@ -14,6 +51,8 @@ export interface Song {
   model?: string
   stems?: string[]
   took?: number
+  // web version: the engine and options the song was split with
+  options?: SplitOptions
 }
 
 export interface AppSettings {
@@ -45,6 +84,8 @@ export interface EngineStatus {
   // cuda torch engine (windows/linux + nvidia only)
   gpuDownloading: boolean
   gpuReady: boolean
+  // web version: optional model checkpoints and their download state
+  models?: ModelStatus[]
 }
 
 export interface EnvStatus {
@@ -112,7 +153,13 @@ export interface StemKitApi {
   exportStem(videoId: string, stem: string): Promise<{ saved: boolean; path?: string }>
   exportAllStems(videoId: string): Promise<{ saved: boolean; path?: string; count?: number }>
   searchYouTube(query: string): Promise<SearchResult[]>
-  startJob(url: string, model?: string, stems?: string[]): Promise<{ started: boolean }>
+  // options is only understood by the web server; the desktop app ignores it
+  startJob(
+    url: string,
+    model?: string,
+    stems?: string[],
+    options?: SplitOptions
+  ): Promise<{ started: boolean }>
   cancelJob(videoId?: string): Promise<void>
   openExternal(url: string): Promise<void>
   getAppVersion(): Promise<string>
@@ -122,7 +169,7 @@ export interface StemKitApi {
   getThumb(videoId: string): Promise<string | null>
   onThumbCached(cb: (videoId: string) => void): () => void
   enginesStatus(): Promise<EngineStatus>
-  fetchEngine(which: 'vocals' | 'ft' | 'gpu'): Promise<void>
+  fetchEngine(which: string): Promise<void>
   onUpdateEvent(cb: (ev: UpdateEvent) => void): () => void
   onJobEvent(cb: (ev: JobEvent) => void): () => void
   onEnvEvent(cb: (ev: EnvEvent) => void): () => void

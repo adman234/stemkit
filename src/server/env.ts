@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, createWriteStream, statSync, renameSync, readFil
 import { once } from 'events'
 import { Readable } from 'stream'
 import { delimiter, dirname, join, resolve } from 'path'
-import type { EngineStatus } from '../shared/types'
+import type { EngineStatus, ModelStatus } from '../shared/types'
+import { MODELS, type ModelId } from '../shared/engines'
 import { broadcast } from './events'
 
 /* Web/Docker replacement for src/main/env.ts. The desktop app builds a
@@ -75,6 +76,10 @@ export function roformerScript(): string {
   return join(APP_DIR, 'python', 'roformer.py')
 }
 
+export function msstScript(): string {
+  return join(APP_DIR, 'python', 'msst.py')
+}
+
 export function modelsDir(): string {
   return join(DATA_DIR, 'models')
 }
@@ -128,7 +133,7 @@ async function probeTools(): Promise<void> {
       PYTHON,
       [
         '-c',
-        'import sys, torch, demucs, yt_dlp, einops, beartype, rotary_embedding_torch;' +
+        'import sys, torch, demucs, yt_dlp, yaml, einops, beartype, rotary_embedding_torch, packaging;' +
           'print("%d.%d.%d" % sys.version_info[:3]); print(torch.__version__); print(yt_dlp.version.__version__)'
       ],
       180000
@@ -154,7 +159,8 @@ async function probeTools(): Promise<void> {
     state.python.found &&
     state.ffmpeg.found &&
     existsSync(separateScript()) &&
-    existsSync(roformerScript())
+    existsSync(roformerScript()) &&
+    existsSync(msstScript())
 }
 
 /* importing torch takes a few seconds, so a successful probe is cached and
@@ -346,6 +352,7 @@ export function vocalsEnginePath(): string {
 }
 
 let vocalsEnginePromise: Promise<boolean> | null = null
+let vocalsPct: number | undefined
 const vocalsProgressListeners = new Set<(pct: number) => void>()
 
 export function ensureVocalsEngine(onProgress?: (pct: number) => void): Promise<boolean> {
@@ -360,6 +367,7 @@ export function ensureVocalsEngine(onProgress?: (pct: number) => void): Promise<
       mkdirSync(modelsDir(), { recursive: true })
       sendEnvEvent('Downloading the vocals engine (~913MB, one time)')
       await downloadTo(CKPT_URL, vocalsEnginePath(), 'vocals engine', (pct) => {
+        vocalsPct = pct
         for (const listener of vocalsProgressListeners) listener(pct)
       })
       sendEnvEvent('Vocals engine ready', 'success')
@@ -374,6 +382,7 @@ export function ensureVocalsEngine(onProgress?: (pct: number) => void): Promise<
       })
       .finally(() => {
         vocalsEnginePromise = null
+        vocalsPct = undefined
       })
   }
   return vocalsEnginePromise.then(detach)
@@ -456,6 +465,83 @@ export function ensureFtWeights(onProgress?: (pct: number) => void): Promise<boo
   return ftWeightsPromise.then(detach)
 }
 
+/* checkpoints for the web engines, fetched into the models folder on first
+   use. The vocals model keeps its own downloader above, shared with the
+   desktop code path */
+const MODEL_FILES: Record<Exclude<ModelId, 'vocals'>, { file: string; url: string }> = {
+  sw: {
+    file: 'BS-Roformer-SW.ckpt',
+    url: 'https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/BS-Roformer-SW.ckpt'
+  },
+  drumsep: {
+    file: 'MDX23C-DrumSep-aufr33-jarredou.ckpt',
+    url: 'https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/MDX23C-DrumSep-aufr33-jarredou.ckpt'
+  }
+}
+
+const modelPromises = new Map<ModelId, Promise<boolean>>()
+const modelProgress = new Map<ModelId, number>()
+const modelListeners = new Map<ModelId, Set<(pct: number) => void>>()
+
+function modelPath(id: ModelId): string {
+  return id === 'vocals' ? vocalsEnginePath() : join(modelsDir(), MODEL_FILES[id].file)
+}
+
+export function ensureModel(id: ModelId, onProgress?: (pct: number) => void): Promise<boolean> {
+  if (id === 'vocals') return ensureVocalsEngine(onProgress)
+  if (existsSync(modelPath(id))) return Promise.resolve(true)
+  let listeners = modelListeners.get(id)
+  if (!listeners) {
+    listeners = new Set()
+    modelListeners.set(id, listeners)
+  }
+  if (onProgress) listeners.add(onProgress)
+  let promise = modelPromises.get(id)
+  if (!promise) {
+    const { name, sizeMb } = MODELS[id]
+    promise = (async () => {
+      mkdirSync(modelsDir(), { recursive: true })
+      sendEnvEvent(`Downloading ${name} (${sizeMb} MB, one time)`)
+      await downloadTo(MODEL_FILES[id].url, modelPath(id), `${name}`, (pct) => {
+        modelProgress.set(id, pct)
+        for (const listener of modelListeners.get(id) ?? []) listener(pct)
+      })
+      sendEnvEvent(`${name} ready`, 'success')
+      return true
+    })()
+      .catch((err) => {
+        sendEnvEvent(
+          `${name} download failed: ${err instanceof Error ? err.message : String(err)}. It will retry on the next split.`,
+          'error'
+        )
+        return false
+      })
+      .finally(() => {
+        modelPromises.delete(id)
+        modelProgress.delete(id)
+      })
+    modelPromises.set(id, promise)
+  }
+  return promise.then((ok) => {
+    if (onProgress) listeners?.delete(onProgress)
+    return ok
+  })
+}
+
+function modelStatus(): ModelStatus[] {
+  return (Object.keys(MODELS) as ModelId[]).map((id) => {
+    const downloading = id === 'vocals' ? vocalsEnginePromise !== null : modelPromises.has(id)
+    return {
+      id,
+      name: MODELS[id].name,
+      sizeMb: MODELS[id].sizeMb,
+      ready: existsSync(modelPath(id)),
+      downloading,
+      pct: id === 'vocals' ? vocalsPct : modelProgress.get(id)
+    }
+  })
+}
+
 export function engineStatus(): EngineStatus {
   return {
     vocalsDownloading: vocalsEnginePromise !== null,
@@ -463,7 +549,8 @@ export function engineStatus(): EngineStatus {
     ftDownloading: ftWeightsPromise !== null,
     ftVerified,
     gpuDownloading: false,
-    gpuReady: gpuInfo === true
+    gpuReady: gpuInfo === true,
+    models: modelStatus()
   }
 }
 

@@ -37,6 +37,18 @@ wget -O /boot/config/plugins/dockerMan/templates-user/my-stemkit.xml https://raw
 | `PUID` / `PGID` / `UMASK` | `99` / `100` / `022` | Owner and mask for files written to `/config` |
 | `PORT` | `8080` | Port the server listens on inside the container |
 
+**Engines and options.** The add song panel picks the engine, the instruments and a few options per song:
+
+| Choice | What it does | Score | Time for a 4 min song (RTX 4070 SUPER) | Peak VRAM | Download |
+| --- | --- | --- | --- | --- | --- |
+| Quick engine | Demucs v4, the desktop app's default. Guitar and piano use the 6-stem Demucs, which is rough | 7.8 dB | about 15 s | about 2 GB | none |
+| Best engine | BS-Roformer SW, 6 stems including real guitar and piano | 10.2 dB | about 35 s | about 2.3 GB | 699 MB |
+| Studio vocals | Mel-Band Roformer vocal model. On Quick it takes the vocals out first (vocals 8.5 to 11.5 dB); on Best it is blended with the engine's vocals (11.7 to 12.2 dB) | | +15 s | about 2.1 GB | 913 MB |
+| Second pass | Twice the chunk overlap (two shifted passes on Quick). Under 0.1 dB better in testing | | about 2x | same | none |
+| Split drum kit | MDX23C DrumSep turns the drums stem into kick, snare, toms, hi-hat, ride and crash | | +10 s | about 1.2 GB | 438 MB |
+
+Scores are the median SDR over the 50 MUSDB18 test clips, averaged over vocals, drums, bass and other (higher is cleaner). Steps run one after another, so peak VRAM is the largest single step, not the sum; two songs splitting at once need about twice that. On a CPU, Quick stays reasonable but the roformer models take 15 minutes or more per song. Models download into `/config/models` the first time they are needed, or ahead of time from Settings.
+
 Everything persistent is under `/config`: `songs/` (the library), `models/` (optional checkpoints and the demucs weights), `settings.json`, `library.json` and `thumbs/`. If YouTube starts answering with "sign in to confirm you're not a bot", export a Netscape format `cookies.txt` from a logged in browser and put it at `/config/cookies.txt`.
 
 Differences from the desktop app:

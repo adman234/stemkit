@@ -11,7 +11,7 @@ import {
   engineStatus,
   ensureFtWeights,
   ensureGpuEngine,
-  ensureVocalsEngine,
+  ensureModel,
   getStatus,
   gpuAccelerationInfo,
   hasGpuAcceleration,
@@ -24,7 +24,8 @@ import { writeZip, zipSize, type ZipEntry } from './zip'
 // desktop main-process modules, reused as-is (see scripts/build-server.mjs)
 import { loadSettings, saveSettings } from '../main/settings'
 import { loadSongs, mixWavPath, removeSong, stemsDir, stemsFor } from '../main/library'
-import { cancelJob, searchYouTube, startJob } from '../main/pipeline'
+import { cancelJob, searchYouTube, startJob } from './pipeline'
+import { MODELS } from '../shared/engines'
 import { clearThumbMemo, getThumb } from '../main/thumbs'
 
 const PORT = Number(process.env.PORT ?? 8080)
@@ -34,7 +35,7 @@ const USERNAME = process.env.STEMKIT_USERNAME ?? ''
 const PASSWORD = process.env.STEMKIT_PASSWORD ?? ''
 
 const VIDEO_ID = /^[\w-]{11}$/
-const STEM_NAME = /^(vocals|drums|bass|other|piano|guitar)$/
+const STEM_NAME = /^(vocals|drums|bass|other|piano|guitar|kick|snare|toms|hihat|ride|crash)$/
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -242,7 +243,7 @@ route('POST', '/api/jobs', async (req) => {
   if (Array.isArray(body.stems)) {
     stems = body.stems.filter((s): s is string => typeof s === 'string' && STEM_NAME.test(s))
   }
-  void startJob(body.url, model, stems)
+  void startJob(body.url, model, stems, body.options && typeof body.options === 'object' ? body.options : undefined)
   return { started: true }
 })
 
@@ -279,7 +280,7 @@ route('GET', '/api/engines', async () => {
 })
 
 route('POST', '/api/engines/:which', async (_req, _res, params) => {
-  if (params.which === 'vocals') void ensureVocalsEngine()
+  if (Object.hasOwn(MODELS, params.which)) void ensureModel(params.which as keyof typeof MODELS)
   else if (params.which === 'ft') void ensureFtWeights()
   else if (params.which === 'gpu') void ensureGpuEngine()
   else throw new HttpError(404, 'Unknown engine')
@@ -410,7 +411,7 @@ async function startup(): Promise<void> {
 
   // pre-fetch the optional checkpoints the user already opted into
   const settings = loadSettings()
-  if (settings.roformerVocals) void ensureVocalsEngine()
+  if (settings.roformerVocals) void ensureModel('vocals')
   if (settings.htdemucsFt) void ensureFtWeights()
 
   if (/^(1|true|yes)$/i.test(process.env.YTDLP_AUTO_UPDATE ?? '')) void updateYtDlp()

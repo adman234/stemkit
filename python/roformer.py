@@ -5,7 +5,6 @@ import struct
 import sys
 import time
 import urllib.request
-import wave
 
 import numpy as np
 import torch
@@ -57,23 +56,13 @@ def fail(message):
 
 
 def load_wav(path):
+    # stems are float WAVs, which the stdlib wave module cannot read
+    from wavio import read_wav
+
     try:
-        with wave.open(path, "rb") as w:
-            sr = w.getframerate()
-            channels = w.getnchannels()
-            width = w.getsampwidth()
-            frames = w.readframes(w.getnframes())
+        return read_wav(path)
     except Exception as e:
         fail(f"cannot read wav {path}: {e}")
-    if width == 2:
-        audio = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
-    elif width == 4:
-        audio = np.frombuffer(frames, dtype="<f4").astype(np.float32)
-    else:
-        fail(f"unsupported sample width {width}")
-    if channels == 0:
-        fail("empty wav")
-    return audio.reshape(-1, channels).T, sr
 
 
 def save_wav_f32(path, data, sr):
@@ -185,10 +174,10 @@ def load_model(ckpt_path, device, use_half):
     return model
 
 
-def separate(model, mix, device, use_half, on_progress):
+def separate(model, mix, device, use_half, on_progress, overlap=NUM_OVERLAP):
     """chunked inference with overlap; mix is a (2, n) tensor on device"""
     total = mix.shape[-1]
-    step = CHUNK_SIZE // NUM_OVERLAP
+    step = CHUNK_SIZE // overlap
     border = CHUNK_SIZE - step
     fade_size = CHUNK_SIZE // 10
     length_init = total
@@ -243,6 +232,10 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--ckpt-dir", required=True)
     parser.add_argument("--device", default="auto")
+    # twice the chunk overlap: slower, very slightly cleaner
+    parser.add_argument("--second-pass", action="store_true")
+    # also write mix minus vocals here, for instrument models to run on
+    parser.add_argument("--instrumental", default="")
     args = parser.parse_args()
 
     vendor = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor")
@@ -285,8 +278,9 @@ def main():
             last_emit = now
 
     emit(type="progress", stage="separate", pct=0, message="separating")
+    overlap = NUM_OVERLAP * 2 if args.second_pass else NUM_OVERLAP
     try:
-        est = separate(model, mix, device, use_half, on_progress)
+        est = separate(model, mix, device, use_half, on_progress, overlap)
     except Exception as e:
         if device == "mps":
             emit(type="progress", stage="separate", pct=0, message=f"gpu failed ({e}), falling back to cpu")
@@ -307,6 +301,8 @@ def main():
     os.makedirs(args.out, exist_ok=True)
     save_wav_f32(os.path.join(args.out, "vocals.wav"), vocals, sr)
     emit(type="stem", name="vocals")
+    if args.instrumental:
+        save_wav_f32(args.instrumental, audio - vocals, sr)
     emit(
         type="done",
         stems=["vocals"],

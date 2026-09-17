@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { AppSettings, EnvStatus, JobProgress, JobStage, Song, UpdateEvent } from '../../shared/types'
-import { MODEL_DEFAULT } from '../../shared/types'
+import type { AppSettings, EnvStatus, JobProgress, JobStage, Song, SplitOptions, UpdateEvent } from '../../shared/types'
+import { DEFAULT_SPLIT, splitTag } from '../../shared/engines'
 import { parseVideoId } from '../../shared/url'
 import { Sidebar } from './components/Sidebar'
 import { Home } from './components/Home'
@@ -42,7 +42,7 @@ export default function App(): React.ReactElement {
   const [jobs, setJobs] = useState<Record<string, JobProgress>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [lastUrl, setLastUrl] = useState('')
-  const [lastModel, setLastModel] = useState(MODEL_DEFAULT)
+  const [lastOptions, setLastOptions] = useState<SplitOptions>(DEFAULT_SPLIT)
   const [envLogs, setEnvLogs] = useState<EnvLog[]>([])
   const [update, setUpdate] = useState<UpdateEvent | null>(null)
   const [appVersion, setAppVersion] = useState<string | undefined>(undefined)
@@ -89,19 +89,22 @@ export default function App(): React.ReactElement {
   }, [status?.ready])
 
   const startUrl = useCallback(
-    async (url: string, model: string = MODEL_DEFAULT, stems?: string[]): Promise<void> => {
+    async (url: string, options: SplitOptions): Promise<void> => {
       const vid = parseVideoId(url)
       if (!vid) return
       setActiveId(vid)
       setLastUrl(url)
-      setLastModel(model)
+      setLastOptions(options)
       setErrors((prev) => withoutKey(prev, vid))
       setJobs((prev) =>
         prev[vid]
           ? prev
-          : { ...prev, [vid]: { videoId: vid, stage: 'metadata', pct: 0, message: 'Starting…', model } }
+          : {
+              ...prev,
+              [vid]: { videoId: vid, stage: 'metadata', pct: 0, message: 'Starting…', model: splitTag(options) }
+            }
       )
-      await window.stemkit.startJob(url, model, stems)
+      await window.stemkit.startJob(url, undefined, options.stems, options)
     },
     []
   )
@@ -115,13 +118,13 @@ export default function App(): React.ReactElement {
   )
 
   const retryJob = useCallback((): void => {
-    if (lastUrl) void startUrl(lastUrl, lastModel)
-  }, [lastUrl, lastModel, startUrl])
+    if (lastUrl) void startUrl(lastUrl, lastOptions)
+  }, [lastUrl, lastOptions, startUrl])
 
   const updateYtDlp = useCallback(async (): Promise<void> => {
     await window.stemkit.envUpdateYtDlp()
-    if (lastUrl) void startUrl(lastUrl, lastModel)
-  }, [lastUrl, lastModel, startUrl])
+    if (lastUrl) void startUrl(lastUrl, lastOptions)
+  }, [lastUrl, lastOptions, startUrl])
 
   const deleteSong = useCallback(
     async (videoId: string): Promise<void> => {
@@ -226,11 +229,10 @@ export default function App(): React.ReactElement {
   } else {
     main = (
       <Home
-        hasSongs={displaySongs.length > 0}
         songs={displaySongs}
         pending={pendingMap}
-        settings={settings ?? undefined}
-        onStart={(u, m, s) => void startUrl(u, m, s)}
+        gpu={!!status.gpu && !!settings?.gpuSplit}
+        onStart={(u, o) => void startUrl(u, o)}
         onSelect={(id) => setActiveId(id)}
         onOpenSettings={() => {
           void window.stemkit.envStatus().then(setStatus)

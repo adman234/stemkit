@@ -3,7 +3,6 @@ import json
 import struct
 import sys
 import time
-import wave
 
 import numpy as np
 
@@ -18,24 +17,13 @@ def fail(message):
 
 
 def load_wav(path):
+    # stems are float WAVs, which the stdlib wave module cannot read
+    from wavio import read_wav
+
     try:
-        with wave.open(path, "rb") as w:
-            sr = w.getframerate()
-            channels = w.getnchannels()
-            width = w.getsampwidth()
-            frames = w.readframes(w.getnframes())
+        return read_wav(path)
     except Exception as e:
         fail(f"cannot read wav {path}: {e}")
-    if width == 2:
-        audio = np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32768.0
-    elif width == 4:
-        audio = np.frombuffer(frames, dtype="<f4").astype(np.float32)
-    else:
-        fail(f"unsupported sample width {width}")
-    if channels == 0:
-        fail("empty wav")
-    audio = audio.reshape(-1, channels).T
-    return audio, sr
 
 
 def save_wav_f32(path, data, sr):

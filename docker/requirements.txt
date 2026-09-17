@@ -7,6 +7,8 @@ einops==0.8.2
 rotary-embedding-torch==0.9.1
 # imported by the vendored roformer attention module
 packaging
+# model configs for msst.py (demucs pulls it in too)
+pyyaml
 # unpinned on purpose: YouTube breaks old releases, and the container also
 # refreshes these on start (YTDLP_AUTO_UPDATE)
 yt-dlp
