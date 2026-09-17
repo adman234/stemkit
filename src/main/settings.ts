@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { BrowserWindow } from 'electron'
 import { userDataDir } from './env'
-import { DEFAULT_SETTINGS, type AppSettings } from '../shared/types'
+import { DEFAULT_SETTINGS, VIDEO_HEIGHTS, type AppSettings } from '../shared/types'
 
 function settingsFile(): string {
   return join(userDataDir(), 'settings.json')
@@ -24,7 +24,11 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
     htdemucsFt: !!merged.htdemucsFt,
     roformerVocals: !!merged.roformerVocals,
     gpuSplit: !!merged.gpuSplit,
-    hideVideo: !!merged.hideVideo
+    hideVideo: !!merged.hideVideo,
+    downloadVideo: !!merged.downloadVideo,
+    videoHeight: VIDEO_HEIGHTS.includes(Number(merged.videoHeight))
+      ? Number(merged.videoHeight)
+      : DEFAULT_SETTINGS.videoHeight
   }
   writeFileSync(settingsFile(), JSON.stringify(next, null, 2))
   for (const win of BrowserWindow.getAllWindows()) {

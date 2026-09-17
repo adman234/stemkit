@@ -24,7 +24,7 @@ import { writeZip, zipSize, type ZipEntry } from './zip'
 // desktop main-process modules, reused as-is (see scripts/build-server.mjs)
 import { loadSettings, saveSettings } from '../main/settings'
 import { loadSongs, mixWavPath, removeSong, stemsDir, stemsFor } from '../main/library'
-import { cancelJob, searchYouTube, startJob } from './pipeline'
+import { cancelJob, fetchVideo, hasVideo, searchYouTube, startJob, videoPath } from './pipeline'
 import { MODELS } from '../shared/engines'
 import { clearThumbMemo, getThumb } from '../main/thumbs'
 
@@ -171,7 +171,55 @@ route('POST', '/api/env/update-ytdlp', async () => updateYtDlp())
 
 route('GET', '/api/version', async () => appVersion())
 
-route('GET', '/api/songs', async () => loadSongs())
+route('GET', '/api/songs', async () =>
+  loadSongs().map((song) => (hasVideo(song.videoId) ? { ...song, video: true } : song))
+)
+
+route('POST', '/api/songs/:videoId/video', async (_req, _res, params) => {
+  void fetchVideo(videoIdParam(params))
+  return null
+})
+
+/* the <video> element needs range requests to seek */
+route('GET', '/api/songs/:videoId/video.mp4', async (req, res, params) => {
+  const videoId = videoIdParam(params)
+  const file = videoPath(videoId)
+  if (!existsSync(file)) throw new HttpError(404, 'No video downloaded for this song')
+  const st = statSync(file)
+  const etag = `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`
+  const headers: Record<string, string | number> = {
+    'Content-Type': 'video/mp4',
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'private, no-cache',
+    ETag: etag
+  }
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '')
+  if (range) {
+    const start = range[1] ? Number(range[1]) : Math.max(0, st.size - Number(range[2]))
+    const end = range[1] && range[2] ? Math.min(Number(range[2]), st.size - 1) : st.size - 1
+    if (start >= st.size || start > end) {
+      res.writeHead(416, { 'Content-Range': `bytes */${st.size}` })
+      res.end()
+      return
+    }
+    res.writeHead(206, {
+      ...headers,
+      'Content-Range': `bytes ${start}-${end}/${st.size}`,
+      'Content-Length': end - start + 1
+    })
+    if (req.method !== 'HEAD') createReadStream(file, { start, end }).pipe(res)
+    else res.end()
+    return
+  }
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304, headers)
+    res.end()
+    return
+  }
+  res.writeHead(200, { ...headers, 'Content-Length': st.size })
+  if (req.method !== 'HEAD') createReadStream(file).pipe(res)
+  else res.end()
+})
 
 route('DELETE', '/api/songs/:videoId', async (_req, _res, params) => {
   return removeSong(videoIdParam(params))

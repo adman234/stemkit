@@ -49,6 +49,13 @@ wget -O /boot/config/plugins/dockerMan/templates-user/my-stemkit.xml https://raw
 
 Scores are the median SDR over the 50 MUSDB18 test clips, averaged over vocals, drums, bass and other (higher is cleaner). Steps run one after another, so peak VRAM is the largest single step, not the sum; two songs splitting at once need about twice that. On a CPU, Quick stays reasonable but the roformer models take 15 minutes or more per song. Models download into `/config/models` the first time they are needed, or ahead of time from Settings.
 
+**Video playback.** The player keeps the picture with the stems, which are the master clock. Two sources are possible:
+
+- **The YouTube embed** (default). The app can only correct it by seeking it, and a seek makes YouTube rebuffer, so corrections are rare: only drift above 1 second that lasts more than 1.5 seconds, at most one correction every 6 seconds, and it stops after three corrections that did not help. Chasing every small drift is what made the player stutter with a spinner every second or two.
+- **A downloaded video**, served from `/config/songs/<id>/video.mp4`. Turn on "Download the video" in Settings to save one with each split, or use the link in the player for a song already in the library. Local playback is kept in step by running the video a fraction faster or slower, which is invisible, so it never rebuffers or jumps. Video only, no audio, roughly 10 to 40 MB per song depending on the quality setting (360p, 480p or 720p).
+
+`npm run web:test` runs a simulation of the sync loop against a fake video element, including a stalled video and a browser that refuses to play.
+
 Everything persistent is under `/config`: `songs/` (the library), `models/` (optional checkpoints and the demucs weights), `settings.json`, `library.json` and `thumbs/`. If YouTube starts answering with "sign in to confirm you're not a bot", export a Netscape format `cookies.txt` from a logged in browser and put it at `/config/cookies.txt`.
 
 Differences from the desktop app:

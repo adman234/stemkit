@@ -53,6 +53,16 @@ export interface Song {
   took?: number
   // web version: the engine and options the song was split with
   options?: SplitOptions
+  // web version: a downloaded video file is on the server for this song
+  video?: boolean
+}
+
+// web version: progress of a video download
+export interface VideoEvent {
+  videoId: string
+  pct?: number
+  ready?: boolean
+  error?: string
 }
 
 export interface AppSettings {
@@ -66,6 +76,11 @@ export interface AppSettings {
   // hide the YouTube video while playing: stems are always played locally,
   // this stops streaming the video and falls back to cached thumbnails
   hideVideo: boolean
+  // web version: also download the video with each split, so playback runs
+  // from the server instead of streaming from YouTube
+  downloadVideo: boolean
+  // tallest video to download (360, 480 or 720)
+  videoHeight: number
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -73,8 +88,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   htdemucsFt: false,
   roformerVocals: false,
   gpuSplit: false,
-  hideVideo: false
+  hideVideo: false,
+  downloadVideo: false,
+  videoHeight: 480
 }
+
+export const VIDEO_HEIGHTS = [360, 480, 720]
 
 export interface EngineStatus {
   vocalsDownloading: boolean
@@ -174,4 +193,7 @@ export interface StemKitApi {
   onJobEvent(cb: (ev: JobEvent) => void): () => void
   onEnvEvent(cb: (ev: EnvEvent) => void): () => void
   onSettingsChange(cb: (settings: AppSettings) => void): () => void
+  // web version only: downloading the video for local playback
+  fetchVideo?(videoId: string): Promise<void>
+  onVideoEvent?(cb: (ev: VideoEvent) => void): () => void
 }

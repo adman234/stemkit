@@ -42,6 +42,111 @@ import { cacheThumbnail } from '../main/thumbs'
 
 export { searchYouTube } from '../main/pipeline'
 
+/* ---------- video for local playback ---------- */
+
+export function videoPath(videoId: string): string {
+  return join(songDir(videoId), 'video.mp4')
+}
+
+export function hasVideo(videoId: string): boolean {
+  return existsSync(videoPath(videoId))
+}
+
+const videoJobs = new Map<string, ChildProcess>()
+
+export function videoDownloading(videoId: string): boolean {
+  return videoJobs.has(videoId)
+}
+
+/* Downloads the video track (no audio: the stems are the audio) so the
+   player can run it locally and stay in sync, instead of streaming the
+   YouTube embed and seeking it whenever it drifts */
+export async function fetchVideo(videoId: string): Promise<void> {
+  if (hasVideo(videoId)) {
+    broadcast('video:event', { videoId, ready: true })
+    return
+  }
+  if (videoJobs.has(videoId)) return
+  const dir = songDir(videoId)
+  if (!existsSync(dir)) {
+    broadcast('video:event', { videoId, error: 'That song is not in the library' })
+    return
+  }
+  const height = loadSettings().videoHeight || 480
+  const url = `https://www.youtube.com/watch?v=${videoId}`
+  const target = join(dir, 'video.%(ext)s')
+  broadcast('video:event', { videoId, pct: 0 })
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(
+        venvYtDlp(),
+        [
+          ...ytDlpRuntimeArgs(),
+          '-f',
+          // video only, H.264 first so every browser can play it
+          `bv*[height<=${height}][vcodec^=avc1]/bv*[height<=${height}][ext=mp4]/bv*[height<=${height}]/b[height<=${height}]`,
+          '--no-playlist',
+          '-o',
+          target,
+          url
+        ],
+        { env: process.env }
+      )
+      videoJobs.set(videoId, child)
+      let maxPct = 0
+      let stderrTail = ''
+      child.stdout?.on('data', (chunk: Buffer) => {
+        for (const piece of chunk.toString().split(/[\r\n]/)) {
+          const m = piece.match(/(\d+(?:\.\d+)?)%/)
+          if (!m) continue
+          const pct = parseFloat(m[1])
+          if (pct > maxPct && pct <= 100) {
+            maxPct = pct
+            broadcast('video:event', { videoId, pct: Math.round(pct) })
+          }
+        }
+      })
+      child.stderr?.on('data', (chunk: Buffer) => {
+        stderrTail = (stderrTail + chunk.toString()).slice(-600)
+      })
+      child.on('error', reject)
+      child.on('close', (code) =>
+        code === 0
+          ? resolve()
+          : reject(new Error(stderrTail.split('\n').filter(Boolean).slice(-1)[0] || `yt-dlp exited ${code}`))
+      )
+    })
+
+    const downloaded = readdirSync(dir).find((f) => f.startsWith('video.'))
+    if (!downloaded) throw new Error('the download produced no file')
+    if (downloaded !== 'video.mp4') {
+      // a webm or mkv container: repackage as mp4 without re-encoding
+      const source = join(dir, downloaded)
+      const ffmpeg = getStatus().ffmpeg.path
+      if (!ffmpeg) throw new Error('ffmpeg is missing from the container')
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(ffmpeg, ['-y', '-i', source, '-an', '-c', 'copy', '-movflags', '+faststart', videoPath(videoId)])
+        videoJobs.set(videoId, child)
+        child.on('error', reject)
+        child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}`))))
+      })
+      rmSync(source, { force: true })
+    }
+    broadcast('video:event', { videoId, ready: true })
+    console.log(`[video] ${videoId}: ready (${height}p)`)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    for (const f of existsSync(dir) ? readdirSync(dir) : []) {
+      if (f.startsWith('video.')) rmSync(join(dir, f), { force: true })
+    }
+    broadcast('video:event', { videoId, error: message })
+    console.error(`[video] ${videoId}: ${message}`)
+  } finally {
+    videoJobs.delete(videoId)
+  }
+}
+
 /* Split pipeline for the web version. Download and conversion follow the
    desktop pipeline (src/main/pipeline.ts); separation is planned from the
    engine and options picked in the add-song panel (src/shared/engines.ts)
@@ -225,6 +330,9 @@ export async function startJob(
     rmSync(rawPath, { force: true })
     if (!alive(job)) return
     progress(job, 'convert', 100)
+
+    // the video downloads in the background: the split does not wait for it
+    if (loadSettings().downloadVideo) void fetchVideo(videoId)
 
     mkdirSync(stemsDir(videoId), { recursive: true })
     progress(job, 'separate', 0, 'Waiting for a free engine slot…')

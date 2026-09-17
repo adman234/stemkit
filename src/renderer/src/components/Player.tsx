@@ -5,6 +5,7 @@ import { buildStemMeta } from '../lib/stems'
 import { fmtTime } from '../lib/format'
 import { Thumb } from '../lib/thumbs'
 import { YouTubeHost, type YTState } from '../lib/youtube'
+import { LocalVideoHost, type VideoHost } from '../lib/video'
 import { StemLane } from './StemLane'
 import { Transport, type PresetId } from './Transport'
 import { DownloadIcon } from './Icons'
@@ -36,13 +37,9 @@ interface Props {
 
 export function Player({ song, settings }: Props): React.ReactElement {
   const containerRef = useRef<HTMLDivElement>(null)
-  const hostRef = useRef<YouTubeHost | null>(null)
+  const hostRef = useRef<VideoHost | null>(null)
   const posRef = useRef(0)
   const playingRef = useRef(false)
-  const videoSyncAtRef = useRef(0)
-
-  const VIDEO_DRIFT_LIMIT = 0.4
-  const VIDEO_RESYNC_COOLDOWN = 2000
 
   const [ytReady, setYtReady] = useState(false)
   const [decoding, setDecoding] = useState(true)
@@ -51,6 +48,9 @@ export function Player({ song, settings }: Props): React.ReactElement {
   const [duration, setDuration] = useState(song.duration || 0)
   const [bump, setBump] = useState(0)
   const [buffers, setBuffers] = useState<BufferMap>({})
+  const [videoPct, setVideoPct] = useState<number | null>(null)
+  const [videoError, setVideoError] = useState<string | null>(null)
+  const [videoStuck, setVideoStuck] = useState(false)
 
   const [vols, setVols] = useState<Partial<Record<StemId, number>>>({})
   const [mutes, setMutes] = useState<Set<StemId>>(new Set())
@@ -74,8 +74,9 @@ export function Player({ song, settings }: Props): React.ReactElement {
     posRef.current = 0
     setPlaying(false)
     playingRef.current = false
-    videoSyncAtRef.current = 0
     setYtReady(false)
+    setVideoPct(null)
+    setVideoError(null)
     setDecodeError(null)
     setBuffers({})
     setDuration(song.duration || 0)
@@ -118,31 +119,59 @@ export function Player({ song, settings }: Props): React.ReactElement {
       setYtReady(false)
       return
     }
-    if (decoding || decodeError || hostRef.current) return
+    if (decoding || decodeError) return
+    const wantsLocal = !!song.video
+    if (hostRef.current) {
+      // already running the right source
+      if (hostRef.current instanceof LocalVideoHost === wantsLocal) return
+      hostRef.current.destroy()
+      hostRef.current = null
+      setYtReady(false)
+    }
     let disposed = false
     const container = containerRef.current
     if (!container) return
 
-    const host = new YouTubeHost()
+    const host: VideoHost = wantsLocal ? new LocalVideoHost() : new YouTubeHost()
     hostRef.current = host
+    setVideoStuck(false)
     void host
       .mount(container, song.videoId, (state: YTState) => {
         if (disposed || !engine.hasBuffers()) return
-        if (state === 'playing') {
-          videoSyncAtRef.current = 0
-          if (!playingRef.current) {
-            host.pause()
-          }
-        }
+        if (state === 'playing' && !playingRef.current) host.pause()
       })
       .then(() => {
-        if (!disposed) setYtReady(true)
+        if (disposed) return
+        setYtReady(true)
+        // the source can change mid-song (the video finished downloading):
+        // pick the picture up where the stems already are
+        if (playingRef.current) {
+          host.seek(posRef.current)
+          host.play()
+        }
       })
 
     return () => {
       disposed = true
     }
-  }, [song.videoId, decoding, decodeError, hideVideo])
+  }, [song.videoId, song.video, decoding, decodeError, hideVideo])
+
+  useEffect(() => {
+    if (!window.stemkit.onVideoEvent) return
+    return window.stemkit.onVideoEvent((ev) => {
+      if (ev.videoId !== song.videoId) return
+      if (ev.error) {
+        setVideoError(ev.error)
+        setVideoPct(null)
+      } else if (ev.ready) {
+        setVideoPct(null)
+        setVideoError(null)
+      } else if (typeof ev.pct === 'number') {
+        setVideoPct(ev.pct)
+        setVideoError(null)
+      }
+    })
+  }, [song.videoId])
 
   useEffect(() => {
     engine.applyMix(vols, mutes, solos, master)
@@ -165,14 +194,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
         return
       }
 
-      const now = performance.now()
-      if (now - videoSyncAtRef.current > VIDEO_RESYNC_COOLDOWN) {
-        const v = hostRef.current?.time() ?? 0
-        if (Math.abs(v - posRef.current) > VIDEO_DRIFT_LIMIT) {
-          videoSyncAtRef.current = now
-          hostRef.current?.seek(posRef.current)
-        }
-      }
+      hostRef.current?.sync(posRef.current, playingRef.current)
     }
     const loop = (): void => {
       tick()
@@ -188,10 +210,12 @@ export function Player({ song, settings }: Props): React.ReactElement {
 
   useEffect(() => {
     const id = setInterval(() => {
-      const d = hostRef.current?.duration() ?? 0
+      const host = hostRef.current
+      const d = host?.duration() ?? 0
       if (d > 0) {
         setDuration((prev) => (Math.abs(prev - d) > 0.5 ? d : prev))
       }
+      setVideoStuck(host instanceof YouTubeHost && host.desynced())
     }, 600)
     return () => clearInterval(id)
   }, [])
@@ -217,7 +241,6 @@ export function Player({ song, settings }: Props): React.ReactElement {
       const clamped = Math.max(0, Math.min(duration > 0 ? duration - 0.05 : t, t))
       posRef.current = clamped
       engine.setPlaying(playingRef.current, clamped)
-      videoSyncAtRef.current = performance.now()
       hostRef.current?.seek(clamped)
       setBump((n) => n + 1)
     },
@@ -361,6 +384,28 @@ export function Player({ song, settings }: Props): React.ReactElement {
                   </span>
                 ))}
               </div>
+
+              {!hideVideo && !song.video && (
+                <div className="text-[11.5px] leading-snug">
+                  {videoPct !== null ? (
+                    <span className="text-white/45 font-mono">Downloading video… {videoPct}%</span>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setVideoError(null)
+                        setVideoPct(0)
+                        void window.stemkit.fetchVideo?.(song.videoId)
+                      }}
+                      className="no-drag text-violet-300 hover:text-violet-200 transition-colors"
+                    >
+                      {videoStuck
+                        ? 'The YouTube player keeps falling behind. Download the video for smooth sync →'
+                        : 'Download the video for smooth sync →'}
+                    </button>
+                  )}
+                  {videoError && <span className="block text-rose-300 mt-0.5">{videoError}</span>}
+                </div>
+              )}
 
               <div className="flex items-center gap-3">
                 <button

@@ -73,12 +73,18 @@ export default function App(): React.ReactElement {
       setEnvLogs((l) => [...l.slice(-300), { message: e.message, level: e.level }])
     )
     const offUpdate = window.stemkit.onUpdateEvent((e) => setUpdate(e))
+    // a finished video download changes the song, so the player can switch
+    // from the YouTube embed to the local file
+    const offVideo = window.stemkit.onVideoEvent?.((ev) => {
+      if (ev.ready) void window.stemkit.listSongs().then(setSongs)
+    })
     void window.stemkit.getAppVersion().then(setAppVersion)
     return () => {
       offJob()
       offEnv()
       offUpdate()
       offSettings()
+      offVideo?.()
     }
   }, [])
 

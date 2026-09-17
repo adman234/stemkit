@@ -7,7 +7,8 @@ import type {
   SearchResult,
   Song,
   StemKitApi,
-  UpdateEvent
+  UpdateEvent,
+  VideoEvent
 } from '../shared/types'
 
 /* Browser implementation of the window.stemkit bridge. The desktop preload
@@ -131,7 +132,11 @@ const api: StemKitApi = {
   onUpdateEvent: (cb) => subscribe<UpdateEvent>('update:event', cb),
   onJobEvent: (cb) => subscribe<JobEvent>('job:event', cb),
   onEnvEvent: (cb) => subscribe<EnvEvent>('env:event', cb),
-  onSettingsChange: (cb) => subscribe<AppSettings>('settings:changed', cb)
+  onSettingsChange: (cb) => subscribe<AppSettings>('settings:changed', cb),
+  fetchVideo: async (videoId) => {
+    await request('POST', `/api/songs/${encodeURIComponent(videoId)}/video`)
+  },
+  onVideoEvent: (cb) => subscribe<VideoEvent>('video:event', cb)
 }
 
 window.stemkit = api
