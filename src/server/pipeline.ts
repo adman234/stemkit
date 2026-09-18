@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { createInterface } from 'readline'
-import { existsSync, mkdirSync, readdirSync, rmSync } from 'fs'
-import { join } from 'path'
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'fs'
+import { dirname, join } from 'path'
 import type { JobEvent, JobStage, SplitOptions } from '../shared/types'
 import { parseVideoId } from '../shared/url'
 import {
@@ -42,6 +42,69 @@ import {
 import { cacheThumbnail } from '../main/thumbs'
 
 export { searchYouTube } from '../main/pipeline'
+
+/* ---------- playback copies ---------- */
+
+/* Stems are 32-bit float WAV, around 20 MB per minute each. That is the
+   right thing to export, but a phone pulling six of them over wifi waits
+   minutes, so playback uses an AAC copy at about a twentieth of the size.
+   The WAVs stay untouched and are what downloads still hand over. */
+export function previewPath(videoId: string, stem: string): string {
+  return join(songDir(videoId), 'preview', `${stem}.m4a`)
+}
+
+const previewJobs = new Map<string, Promise<boolean>>()
+
+export function ensurePreview(videoId: string, stem: string): Promise<boolean> {
+  const out = previewPath(videoId, stem)
+  if (existsSync(out)) return Promise.resolve(true)
+  const source = join(stemsDir(videoId), `${stem}.wav`)
+  if (!existsSync(source)) return Promise.resolve(false)
+  const key = `${videoId}/${stem}`
+  let job = previewJobs.get(key)
+  if (!job) {
+    job = new Promise<boolean>((resolve) => {
+      const ffmpeg = getStatus().ffmpeg.path
+      if (!ffmpeg) return resolve(false)
+      mkdirSync(dirname(out), { recursive: true })
+      const partial = `${out}.part.m4a`
+      const child = spawn(ffmpeg, [
+        '-y',
+        '-i',
+        source,
+        '-c:a',
+        'aac',
+        '-b:a',
+        '160k',
+        '-movflags',
+        '+faststart',
+        partial
+      ])
+      child.on('error', () => resolve(false))
+      child.on('close', (code) => {
+        if (code === 0 && existsSync(partial)) {
+          renameSync(partial, out)
+          resolve(true)
+        } else {
+          rmSync(partial, { force: true })
+          resolve(false)
+        }
+      })
+    }).finally(() => {
+      previewJobs.delete(key)
+    })
+    previewJobs.set(key, job)
+  }
+  return job
+}
+
+/* made in the background once a split finishes, so the first play is quick */
+export async function buildPreviews(videoId: string, stems: string[]): Promise<void> {
+  for (const stem of stems) {
+    if (!existsSync(songDir(videoId))) return
+    await ensurePreview(videoId, stem)
+  }
+}
 
 /* ---------- key and chords ---------- */
 
@@ -470,6 +533,8 @@ export async function startJob(
         options
       })
       send({ kind: 'done', data: { videoId, song: songs[0] } })
+      // the playback copies are not worth making the split wait for
+      void buildPreviews(videoId, expected)
     } finally {
       release()
     }

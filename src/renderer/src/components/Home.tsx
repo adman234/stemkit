@@ -432,7 +432,7 @@ export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettin
                             onClick={() => startWithSelection(r.videoId)}
                             disabled={!hasStems}
                             title="Split this song again with the engine and options above"
-                            className="no-drag text-[11px] font-medium text-violet-300 opacity-0 group-hover:opacity-100 hover:text-violet-200 transition-opacity"
+                            className="no-drag text-[11px] font-medium text-violet-300 opacity-100 md:opacity-0 md:group-hover:opacity-100 hover:text-violet-200 transition-opacity"
                           >
                             Split again
                           </button>
@@ -442,7 +442,7 @@ export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettin
                         <button
                           onClick={() => startWithSelection(r.videoId)}
                           disabled={!hasStems}
-                          className="no-drag shrink-0 text-[11px] font-medium text-violet-300 opacity-0 group-hover:opacity-100 transition-opacity pr-2"
+                          className="no-drag shrink-0 text-[11px] font-medium text-violet-300 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity pr-2 px-2 py-1 md:px-0 md:py-0 rounded-md bg-violet-500/15 md:bg-transparent"
                         >
                           Split →
                         </button>

@@ -101,11 +101,16 @@ const api: StemKitApi = {
     return out
   },
   getStemBuffer: async (videoId, stem) => {
-    const res = await fetch(
-      `/api/songs/${encodeURIComponent(videoId)}/stems/${encodeURIComponent(stem)}.wav`
-    )
-    if (!res.ok) throw new Error(`Could not load the ${stem} stem (HTTP ${res.status})`)
-    return new Uint8Array(await res.arrayBuffer())
+    const id = encodeURIComponent(videoId)
+    const name = encodeURIComponent(stem)
+    // the AAC copy is a twentieth of the size; the float WAV is the fallback
+    // for songs split before playback copies existed
+    for (const path of [`/api/songs/${id}/stems/${name}.m4a`, `/api/songs/${id}/stems/${name}.wav`]) {
+      const res = await fetch(path)
+      if (res.ok) return new Uint8Array(await res.arrayBuffer())
+      if (!path.endsWith('.m4a')) throw new Error(`Could not load the ${stem} stem (HTTP ${res.status})`)
+    }
+    throw new Error(`Could not load the ${stem} stem`)
   },
   exportStem: async (videoId, stem) => {
     download(`/api/songs/${encodeURIComponent(videoId)}/stems/${encodeURIComponent(stem)}.wav?download=1`)

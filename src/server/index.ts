@@ -28,9 +28,11 @@ import {
   cancelJob,
   chordsPath,
   detectChords,
+  ensurePreview,
   fetchVideo,
   hasChords,
   hasVideo,
+  previewPath,
   searchYouTube,
   startJob,
   videoPath
@@ -142,6 +144,45 @@ function songTitle(videoId: string): string {
   return loadSongs().find((s) => s.videoId === videoId)?.title ?? videoId
 }
 
+/* serves a file with range requests, which media elements need in order to
+   seek, plus an ETag so a reload does not fetch it again */
+function sendFile(req: IncomingMessage, res: ServerResponse, file: string, contentType: string): void {
+  const st = statSync(file)
+  const etag = `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`
+  const headers: Record<string, string | number> = {
+    'Content-Type': contentType,
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'private, no-cache',
+    ETag: etag
+  }
+  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '')
+  if (range) {
+    const start = range[1] ? Number(range[1]) : Math.max(0, st.size - Number(range[2]))
+    const end = range[1] && range[2] ? Math.min(Number(range[2]), st.size - 1) : st.size - 1
+    if (start >= st.size || start > end) {
+      res.writeHead(416, { 'Content-Range': `bytes */${st.size}` })
+      res.end()
+      return
+    }
+    res.writeHead(206, {
+      ...headers,
+      'Content-Range': `bytes ${start}-${end}/${st.size}`,
+      'Content-Length': end - start + 1
+    })
+    if (req.method !== 'HEAD') createReadStream(file, { start, end }).pipe(res)
+    else res.end()
+    return
+  }
+  if (req.headers['if-none-match'] === etag) {
+    res.writeHead(304, headers)
+    res.end()
+    return
+  }
+  res.writeHead(200, { ...headers, 'Content-Length': st.size })
+  if (req.method !== 'HEAD') createReadStream(file).pipe(res)
+  else res.end()
+}
+
 /* ---------- API ---------- */
 
 route('GET', '/healthz', async (_req, res) => {
@@ -234,40 +275,7 @@ route('GET', '/api/songs/:videoId/video.mp4', async (req, res, params) => {
   const videoId = videoIdParam(params)
   const file = videoPath(videoId)
   if (!existsSync(file)) throw new HttpError(404, 'No video downloaded for this song')
-  const st = statSync(file)
-  const etag = `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`
-  const headers: Record<string, string | number> = {
-    'Content-Type': 'video/mp4',
-    'Accept-Ranges': 'bytes',
-    'Cache-Control': 'private, no-cache',
-    ETag: etag
-  }
-  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '')
-  if (range) {
-    const start = range[1] ? Number(range[1]) : Math.max(0, st.size - Number(range[2]))
-    const end = range[1] && range[2] ? Math.min(Number(range[2]), st.size - 1) : st.size - 1
-    if (start >= st.size || start > end) {
-      res.writeHead(416, { 'Content-Range': `bytes */${st.size}` })
-      res.end()
-      return
-    }
-    res.writeHead(206, {
-      ...headers,
-      'Content-Range': `bytes ${start}-${end}/${st.size}`,
-      'Content-Length': end - start + 1
-    })
-    if (req.method !== 'HEAD') createReadStream(file, { start, end }).pipe(res)
-    else res.end()
-    return
-  }
-  if (req.headers['if-none-match'] === etag) {
-    res.writeHead(304, headers)
-    res.end()
-    return
-  }
-  res.writeHead(200, { ...headers, 'Content-Length': st.size })
-  if (req.method !== 'HEAD') createReadStream(file).pipe(res)
-  else res.end()
+  sendFile(req, res, file, 'video/mp4')
 })
 
 route('DELETE', '/api/songs/:videoId', async (_req, _res, params) => {
@@ -277,6 +285,16 @@ route('DELETE', '/api/songs/:videoId', async (_req, _res, params) => {
 route('GET', '/api/songs/:videoId/stems', async (_req, _res, params) => {
   const videoId = videoIdParam(params)
   return stemsFor(loadSongs().find((s) => s.videoId === videoId))
+})
+
+/* the compressed copy the player listens to, made on the spot for songs that
+   were split before playback copies existed */
+route('GET', '/api/songs/:videoId/stems/:stem.m4a', async (req, res, params) => {
+  const videoId = videoIdParam(params)
+  const stem = params.stem
+  if (!STEM_NAME.test(stem)) throw new HttpError(400, 'Invalid stem name')
+  if (!(await ensurePreview(videoId, stem))) throw new HttpError(404, `No playback copy for ${stem}`)
+  sendFile(req, res, previewPath(videoId, stem), 'audio/mp4')
 })
 
 route('GET', '/api/songs/:videoId/stems/:stem', async (req, res, params, url) => {
