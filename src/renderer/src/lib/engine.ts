@@ -7,9 +7,169 @@ export type BufferMap = Partial<Record<StemId, AudioBuffer>>
    songs: decoding then failed and the player came up with no stems at all */
 let shared: AudioContext | null = null
 
+/* Decoded audio is 32-bit float whatever it arrived as, so a five minute song
+   split six ways is about 630 MB in memory, and a twenty minute one is past
+   two gigabytes. That is what makes a phone crawl. Light playback decodes at
+   24 kHz in mono instead, a bit over a quarter of the memory: fine for
+   hearing the parts, not for critical listening. */
+const LIGHT_RATE = 24000
+const LIGHT_KEY = 'stemkit.lightPlayback'
+
+export function lightPlayback(): boolean {
+  try {
+    const saved = localStorage.getItem(LIGHT_KEY)
+    if (saved !== null) return saved === '1'
+  } catch {}
+  // phones need it, desktops do not, and a narrow desktop window is still a
+  // desktop: a touch pointer is what tells them apart
+  if (typeof window === 'undefined') return false
+  return window.matchMedia('(max-width: 767px)').matches && window.matchMedia('(pointer: coarse)').matches
+}
+
+/* the sample rate of a context is fixed when it is made, so changing this
+   starts a new one and everything decoded so far has to go */
+export function setLightPlayback(on: boolean): void {
+  if (on === lightPlayback()) return
+  try {
+    localStorage.setItem(LIGHT_KEY, on ? '1' : '0')
+  } catch {}
+  engine.stopAll()
+  engine.forgetContext()
+  const old = shared
+  shared = null
+  void old?.close().catch(() => {})
+  window.dispatchEvent(new CustomEvent('stemkit:playback-quality'))
+}
+
 export function audioContext(): AudioContext {
-  if (!shared) shared = new AudioContext()
+  if (!shared) {
+    shared = lightPlayback() ? new AudioContext({ sampleRate: LIGHT_RATE }) : new AudioContext()
+  }
   return shared
+}
+
+interface Pcm {
+  channels: Float32Array[]
+  sampleRate: number
+}
+
+/* The splitter writes 32-bit float WAVs, which Firefox will not decode at all
+   ("the buffer passed to decodeAudioData contains invalid content"), so they
+   are read here instead of being handed to the browser. It is also the
+   cheaper path: no copy of a hundred-megabyte buffer, and the samples can be
+   thinned on the way in rather than after the whole thing is in memory. */
+function readWav(bytes: ArrayBuffer): Pcm {
+  const view = new DataView(bytes)
+  const tag = (at: number): string =>
+    String.fromCharCode(view.getUint8(at), view.getUint8(at + 1), view.getUint8(at + 2), view.getUint8(at + 3))
+  if (view.byteLength < 44 || tag(0) !== 'RIFF' || tag(8) !== 'WAVE') throw new Error('not a WAV file')
+
+  let format = 1
+  let count = 2
+  let sampleRate = 44100
+  let bits = 32
+  let dataAt = -1
+  let dataLength = 0
+  for (let at = 12; at + 8 <= view.byteLength; ) {
+    const id = tag(at)
+    const size = view.getUint32(at + 4, true)
+    const body = at + 8
+    if (id === 'fmt ') {
+      format = view.getUint16(body, true)
+      count = view.getUint16(body + 2, true)
+      sampleRate = view.getUint32(body + 4, true)
+      bits = view.getUint16(body + 14, true)
+      // WAVE_FORMAT_EXTENSIBLE keeps the real format at the front of its GUID
+      if (format === 0xfffe && size >= 40) format = view.getUint16(body + 24, true)
+    } else if (id === 'data') {
+      dataAt = body
+      dataLength = Math.min(size, view.byteLength - body)
+      break
+    }
+    at = body + size + (size % 2)
+  }
+  if (dataAt < 0 || !count || !sampleRate) throw new Error('WAV file has no audio')
+
+  const width = bits >> 3
+  const frames = Math.floor(dataLength / (width * count))
+  const channels = Array.from({ length: count }, () => new Float32Array(frames))
+
+  if (format === 3 && bits === 32 && dataAt % 4 === 0) {
+    // the common case, and a typed array beats a DataView call per sample
+    const flat = new Float32Array(bytes, dataAt, frames * count)
+    for (let f = 0; f < frames; f++) {
+      for (let c = 0; c < count; c++) channels[c][f] = flat[f * count + c]
+    }
+    return { channels, sampleRate }
+  }
+
+  const sample = (at: number): number => {
+    if (format === 3) return bits === 64 ? view.getFloat64(at, true) : view.getFloat32(at, true)
+    if (bits === 16) return view.getInt16(at, true) / 32768
+    if (bits === 24) {
+      return (view.getUint8(at) | (view.getUint8(at + 1) << 8) | (view.getInt8(at + 2) << 16)) / 8388608
+    }
+    if (bits === 32) return view.getInt32(at, true) / 2147483648
+    if (bits === 8) return view.getUint8(at) / 128 - 1
+    throw new Error(`unsupported WAV depth (${bits}-bit)`)
+  }
+  if (format !== 1 && format !== 3) throw new Error(`unsupported WAV format (${format})`)
+  for (let f = 0; f < frames; f++) {
+    for (let c = 0; c < count; c++) channels[c][f] = sample(dataAt + (f * count + c) * width)
+  }
+  return { channels, sampleRate }
+}
+
+/* light playback thins the samples here, so the full-rate version never has
+   to exist. The box average is a crude anti-alias filter, but decimating
+   44.1 kHz straight down to 24 kHz without one whistles. */
+function toAudioBuffer(ctx: AudioContext, pcm: Pcm): AudioBuffer {
+  const light = lightPlayback()
+  const rate = light ? Math.min(ctx.sampleRate, pcm.sampleRate) : pcm.sampleRate
+  const outCount = light ? 1 : pcm.channels.length
+  const step = pcm.sampleRate / rate
+  const frames = Math.max(1, Math.floor(pcm.channels[0].length / step))
+  const buffer = ctx.createBuffer(outCount, frames, rate)
+
+  if (!light) {
+    for (let c = 0; c < outCount; c++) buffer.getChannelData(c).set(pcm.channels[c])
+    return buffer
+  }
+  const out = buffer.getChannelData(0)
+  const source = pcm.channels
+  const length = source[0].length
+  for (let f = 0; f < frames; f++) {
+    const from = Math.floor(f * step)
+    const to = Math.min(length, Math.max(from + 1, Math.floor((f + 1) * step)))
+    let sum = 0
+    for (let i = from; i < to; i++) {
+      for (let c = 0; c < source.length; c++) sum += source[c][i]
+    }
+    out[f] = sum / ((to - from) * source.length)
+  }
+  return buffer
+}
+
+/* decodes one stem, in mono at a lower rate when light playback is on */
+export async function decodeStem(bytes: ArrayBuffer): Promise<AudioBuffer> {
+  const ctx = audioContext()
+  const head = new Uint8Array(bytes, 0, Math.min(4, bytes.byteLength))
+  const riff = head.length === 4 && head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46
+  // reading it ourselves leaves the bytes intact, so decodeAudioData (which
+  // detaches them) stays available as the fallback, not the other way round
+  if (riff) {
+    try {
+      return toAudioBuffer(ctx, readWav(bytes))
+    } catch {}
+  }
+  const buffer = await ctx.decodeAudioData(bytes)
+  if (!lightPlayback() || buffer.numberOfChannels < 2) return buffer
+  const mono = ctx.createBuffer(1, buffer.length, buffer.sampleRate)
+  const out = mono.getChannelData(0)
+  const left = buffer.getChannelData(0)
+  const right = buffer.getChannelData(1)
+  for (let i = 0; i < buffer.length; i++) out[i] = (left[i] + right[i]) / 2
+  return mono
 }
 
 /* Decodes one stem at a time and lets go of each stem's bytes as it goes.
@@ -19,14 +179,13 @@ export async function decodePayload(
   payload: Record<string, Uint8Array>,
   onProgress?: (done: number, total: number) => void
 ): Promise<BufferMap> {
-  const ctx = audioContext()
   const ids = Object.keys(payload)
   const out: BufferMap = {}
   for (let i = 0; i < ids.length; i++) {
     const id = ids[i]
     // decodeAudioData detaches the source buffer, which is what we want:
     // the encoded copy is throwaway once it is decoded
-    out[id as StemId] = await ctx.decodeAudioData(payload[id].buffer as ArrayBuffer)
+    out[id as StemId] = await decodeStem(payload[id].buffer as ArrayBuffer)
     delete payload[id]
     onProgress?.(i + 1, ids.length)
   }
@@ -140,6 +299,15 @@ export class StemEngine {
   stopAll(): void {
     this.playing = false
     this.stopSources()
+  }
+
+  /* the shared context was replaced, so the nodes hanging off it are dead */
+  forgetContext(): void {
+    this.stopSources()
+    this.ctx = null
+    this.master = null
+    this.gains = {}
+    this.buffers = {}
   }
 
   private stopSources(): void {

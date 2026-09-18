@@ -64,9 +64,13 @@ export function ensurePreview(videoId: string, stem: string): Promise<boolean> {
   const started = Date.now()
   let job = previewJobs.get(key)
   if (!job) {
+    let why = ''
     job = new Promise<boolean>((resolve) => {
       const ffmpeg = getStatus().ffmpeg.path
-      if (!ffmpeg) return resolve(false)
+      if (!ffmpeg) {
+        why = 'no ffmpeg on PATH'
+        return resolve(false)
+      }
       mkdirSync(dirname(out), { recursive: true })
       const partial = `${out}.part.m4a`
       const child = spawn(ffmpeg, [
@@ -81,12 +85,20 @@ export function ensurePreview(videoId: string, stem: string): Promise<boolean> {
         '+faststart',
         partial
       ])
-      child.on('error', () => resolve(false))
+      let stderr = ''
+      child.stderr?.on('data', (chunk: Buffer) => {
+        stderr = (stderr + chunk.toString()).slice(-400)
+      })
+      child.on('error', (err) => {
+        why = err.message
+        resolve(false)
+      })
       child.on('close', (code) => {
         if (code === 0 && existsSync(partial)) {
           renameSync(partial, out)
           resolve(true)
         } else {
+          why = `ffmpeg exited ${code}: ${stderr.trim().slice(-160)}`
           rmSync(partial, { force: true })
           resolve(false)
         }
@@ -94,7 +106,9 @@ export function ensurePreview(videoId: string, stem: string): Promise<boolean> {
     })
       .then((ok) => {
         console.log(
-          `[preview] ${videoId}/${stem}: ${ok ? `ready in ${Math.round((Date.now() - started) / 100) / 10}s` : 'failed'}`
+          `[preview] ${videoId}/${stem}: ${
+            ok ? `ready in ${Math.round((Date.now() - started) / 100) / 10}s` : `failed, ${why || 'unknown'}`
+          }`
         )
         return ok
       })

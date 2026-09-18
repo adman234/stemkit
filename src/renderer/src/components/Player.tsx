@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppSettings, ChordData, Song, StemId } from '../../../shared/types'
 import { DEFAULT_STEMS } from '../../../shared/types'
-import { audioContext, engine, decodePayload, type BufferMap } from '../lib/engine'
+import { decodeStem, engine, decodePayload, lightPlayback, type BufferMap } from '../lib/engine'
 import { buildStemMeta } from '../lib/stems'
 import { fmtTime } from '../lib/format'
 import { Thumb } from '../lib/thumbs'
@@ -29,14 +29,14 @@ async function loadBuffers(song: Song, onProgress: Progress): Promise<BufferCach
     // the desktop app hands over every stem in one go
     return decodePayload(await window.stemkit.getBuffers(song.videoId), onProgress)
   }
-  const ctx = audioContext()
   const out: BufferCacheMap = {}
-  let warnedSlow = false
+  const failed: string[] = []
+  let bytes = 0
+  const started = performance.now()
   for (let i = 0; i < stems.length; i++) {
     // the first stem can wait on the server making its playback copy, which
     // happens once per song: say so rather than looking stuck
     const slow = setTimeout(() => {
-      warnedSlow = true
       onProgress(i, stems.length, 'the server is preparing this song for playback')
     }, 3000)
     let loadedStem
@@ -45,14 +45,29 @@ async function loadBuffers(song: Song, onProgress: Progress): Promise<BufferCach
     } finally {
       clearTimeout(slow)
     }
-    out[stems[i] as StemId] = await ctx.decodeAudioData(loadedStem.bytes.buffer as ArrayBuffer)
-    onProgress(
-      i + 1,
-      stems.length,
-      loadedStem.compressed ? (warnedSlow ? '' : undefined) : 'full quality audio, which is slower to load'
-    )
+    bytes += loadedStem.bytes.byteLength
+    const source = `${loadedStem.compressed ? 'm4a' : 'wav'}, ${(
+      loadedStem.bytes.byteLength / 1048576
+    ).toFixed(1)} MB`
+    try {
+      out[stems[i] as StemId] = await decodeStem(loadedStem.bytes.buffer as ArrayBuffer)
+    } catch (err) {
+      // a stem that will not decode is worth naming; the rest still play
+      failed.push(`${stems[i]} (${source}): ${err instanceof Error ? err.message : String(err)}`)
+    }
+    const seconds = (performance.now() - started) / 1000
+    const summary = `${(bytes / 1048576).toFixed(0)} MB in ${seconds.toFixed(0)}s${
+      lightPlayback() ? ' · light playback' : ''
+    }${loadedStem.compressed ? '' : ' · full quality audio, which is slower to load'}`
+    onProgress(i + 1, stems.length, failed.length ? `${summary} · ${failed.length} failed` : summary)
   }
+  if (failed.length && !Object.keys(out).length) throw new Error(failed.join(' · '))
+  if (failed.length) onProgress(stems.length, stems.length, `could not play ${failed.join(' · ')}`)
   return out
+}
+
+export function forgetDecoded(): void {
+  bufferCache.clear()
 }
 
 function getDecoded(song: Song, onProgress: Progress): Promise<BufferCacheMap> {
@@ -213,6 +228,15 @@ export function Player({ song, settings }: Props): React.ReactElement {
       alive = false
     }
   }, [song.videoId, song.chords])
+
+  useEffect(() => {
+    const onQuality = (): void => {
+      forgetDecoded()
+      setReloads((n) => n + 1)
+    }
+    window.addEventListener('stemkit:playback-quality', onQuality)
+    return () => window.removeEventListener('stemkit:playback-quality', onQuality)
+  }, [])
 
   useEffect(() => {
     if (!window.stemkit.onChordsEvent) return
@@ -441,9 +465,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
                     {song.options ? ` · ${splitLabel(song.options)}` : ''}
                     {chords ? ` · ${chords.key.name}` : ''}
                   </p>
-                  {decoding && loaded?.note && (
-                    <p className="text-[11px] text-white/45 mt-1">{loaded.note}</p>
-                  )}
+                  {loaded?.note && <p className="text-[11px] text-white/45 mt-1">{loaded.note}</p>}
                 </div>
                 <span className="shrink-0 text-xs px-3 py-1.5 rounded-full bg-white/5 text-white/50 font-medium">
                   {decoding && loaded

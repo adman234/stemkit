@@ -216,7 +216,7 @@ export interface StemKitApi {
   getStemBuffer?(
     videoId: string,
     stem: string
-  ): Promise<{ bytes: Uint8Array; compressed: boolean }>
+  ): Promise<{ bytes: Uint8Array; compressed: boolean; type?: string }>
   exportStem(videoId: string, stem: string): Promise<{ saved: boolean; path?: string }>
   exportAllStems(videoId: string): Promise<{ saved: boolean; path?: string; count?: number }>
   searchYouTube(query: string): Promise<SearchResult[]>

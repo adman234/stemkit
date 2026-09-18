@@ -308,6 +308,11 @@ route('GET', '/api/songs/:videoId/stems/:stem', async (req, res, params, url) =>
   if (!STEM_NAME.test(stem)) throw new HttpError(400, 'Invalid stem name')
   const file = join(stemsDir(videoId), `${stem}.wav`)
   if (!existsSync(file)) throw new HttpError(404, `Missing stem ${stem}`)
+  if (!url.searchParams.has('download')) {
+    // playback should be using the compressed copy; if it is not, the reason
+    // is in the [preview] line above this one
+    console.log(`[stem] ${videoId}/${stem}: serving the full WAV for playback`)
+  }
   const st = statSync(file)
   const etag = `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`
   const headers: Record<string, string | number> = {
