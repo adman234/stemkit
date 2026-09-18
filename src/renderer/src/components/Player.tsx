@@ -15,7 +15,7 @@ import { DRUM_KIT, splitLabel } from '../../../shared/engines'
 
 type BufferCacheMap = BufferMap
 
-type Progress = (done: number, total: number) => void
+type Progress = (done: number, total: number, note?: string) => void
 
 const bufferCache = new Map<string, Promise<BufferCacheMap>>()
 
@@ -31,10 +31,26 @@ async function loadBuffers(song: Song, onProgress: Progress): Promise<BufferCach
   }
   const ctx = audioContext()
   const out: BufferCacheMap = {}
+  let warnedSlow = false
   for (let i = 0; i < stems.length; i++) {
-    const bytes = await fetchStem(song.videoId, stems[i])
-    out[stems[i] as StemId] = await ctx.decodeAudioData(bytes.buffer as ArrayBuffer)
-    onProgress(i + 1, stems.length)
+    // the first stem can wait on the server making its playback copy, which
+    // happens once per song: say so rather than looking stuck
+    const slow = setTimeout(() => {
+      warnedSlow = true
+      onProgress(i, stems.length, 'the server is preparing this song for playback')
+    }, 3000)
+    let loadedStem
+    try {
+      loadedStem = await fetchStem(song.videoId, stems[i])
+    } finally {
+      clearTimeout(slow)
+    }
+    out[stems[i] as StemId] = await ctx.decodeAudioData(loadedStem.bytes.buffer as ArrayBuffer)
+    onProgress(
+      i + 1,
+      stems.length,
+      loadedStem.compressed ? (warnedSlow ? '' : undefined) : 'full quality audio, which is slower to load'
+    )
   }
   return out
 }
@@ -65,7 +81,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
   const [ytReady, setYtReady] = useState(false)
   const [decoding, setDecoding] = useState(true)
   const [decodeError, setDecodeError] = useState<string | null>(null)
-  const [loaded, setLoaded] = useState<{ done: number; total: number } | null>(null)
+  const [loaded, setLoaded] = useState<{ done: number; total: number; note?: string } | null>(null)
   const [reloads, setReloads] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [duration, setDuration] = useState(song.duration || 0)
@@ -115,8 +131,8 @@ export function Player({ song, settings }: Props): React.ReactElement {
     let cancelled = false
     setDecoding(true)
     setLoaded(null)
-    getDecoded(song, (done, total) => {
-      if (!cancelled) setLoaded({ done, total })
+    getDecoded(song, (done, total, note) => {
+      if (!cancelled) setLoaded((prev) => ({ done, total, note: note === undefined ? prev?.note : note || undefined }))
     })
       .then((decoded) => {
         if (cancelled) return
@@ -425,6 +441,9 @@ export function Player({ song, settings }: Props): React.ReactElement {
                     {song.options ? ` · ${splitLabel(song.options)}` : ''}
                     {chords ? ` · ${chords.key.name}` : ''}
                   </p>
+                  {decoding && loaded?.note && (
+                    <p className="text-[11px] text-white/45 mt-1">{loaded.note}</p>
+                  )}
                 </div>
                 <span className="shrink-0 text-xs px-3 py-1.5 rounded-full bg-white/5 text-white/50 font-medium">
                   {decoding && loaded

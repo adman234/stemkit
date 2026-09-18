@@ -51,7 +51,10 @@ RUN /opt/venv/bin/python -m compileall -q /app/python
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod 755 /usr/local/bin/entrypoint.sh
 
-ENV STEMKIT_DATA=/config \
+# stamped by the workflow so the app can show which build is running
+ARG GIT_SHA=""
+ENV STEMKIT_BUILD=${GIT_SHA} \
+    STEMKIT_DATA=/config \
     STEMKIT_APP_DIR=/app \
     STEMKIT_PYTHON=/opt/venv/bin/python \
     STEMKIT_ATTENTION=efficient \

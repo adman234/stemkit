@@ -93,11 +93,13 @@ export function cookiesFile(): string {
 }
 
 export function appVersion(): string {
+  // the image stamps the commit in, so a stale container is obvious
+  const build = (process.env.STEMKIT_BUILD ?? '').slice(0, 7)
   try {
     const pkg = JSON.parse(readFileSync(join(APP_DIR, 'package.json'), 'utf8'))
-    return `${pkg.version}-web`
+    return `${pkg.version}-web${build ? ` · ${build}` : ''}`
   } catch {
-    return 'web'
+    return `web${build ? ` · ${build}` : ''}`
   }
 }
 

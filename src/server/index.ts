@@ -25,6 +25,7 @@ import { writeZip, zipSize, type ZipEntry } from './zip'
 import { loadSettings, saveSettings } from '../main/settings'
 import { loadSongs, mixWavPath, removeSong, stemsDir, stemsFor } from '../main/library'
 import {
+  buildPreviews,
   cancelJob,
   chordsPath,
   detectChords,
@@ -294,6 +295,10 @@ route('GET', '/api/songs/:videoId/stems/:stem.m4a', async (req, res, params) => 
   const stem = params.stem
   if (!STEM_NAME.test(stem)) throw new HttpError(400, 'Invalid stem name')
   if (!(await ensurePreview(videoId, stem))) throw new HttpError(404, `No playback copy for ${stem}`)
+  // get the rest ready while this one plays, so the wait happens once
+  const song = loadSongs().find((s) => s.videoId === videoId)
+  const rest = (song?.stems ?? []).filter((name) => name !== stem)
+  if (rest.length) void buildPreviews(videoId, rest)
   sendFile(req, res, previewPath(videoId, stem), 'audio/mp4')
 })
 

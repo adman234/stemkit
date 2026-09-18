@@ -61,6 +61,7 @@ export function ensurePreview(videoId: string, stem: string): Promise<boolean> {
   const source = join(stemsDir(videoId), `${stem}.wav`)
   if (!existsSync(source)) return Promise.resolve(false)
   const key = `${videoId}/${stem}`
+  const started = Date.now()
   let job = previewJobs.get(key)
   if (!job) {
     job = new Promise<boolean>((resolve) => {
@@ -90,9 +91,16 @@ export function ensurePreview(videoId: string, stem: string): Promise<boolean> {
           resolve(false)
         }
       })
-    }).finally(() => {
-      previewJobs.delete(key)
     })
+      .then((ok) => {
+        console.log(
+          `[preview] ${videoId}/${stem}: ${ok ? `ready in ${Math.round((Date.now() - started) / 100) / 10}s` : 'failed'}`
+        )
+        return ok
+      })
+      .finally(() => {
+        previewJobs.delete(key)
+      })
     previewJobs.set(key, job)
   }
   return job
