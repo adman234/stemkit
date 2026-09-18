@@ -129,7 +129,7 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
             {unsure ? `unsure, could be ${key.alternative}` : `or its relative, ${key.relative}`}
           </span>
         </div>
-        <div className="flex items-center gap-3 shrink-0 text-[11px] text-white/35 font-mono">
+        <div className="flex items-center gap-2 md:gap-3 shrink-0 text-[11px] text-white/35 font-mono flex-wrap">
           {chords.tempo ? <span>{Math.round(chords.tempo)} BPM</span> : null}
           <span>{segments.filter((s) => shown(s) !== 'N').length} chords</span>
           {current && shown(current) !== 'N' && (
@@ -296,6 +296,18 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
               )
             })}
           </div>
+          {/* a phone cannot hover, so the shapes sit in the picker too */}
+          {shapesFor(shown(editingSegment)).length > 0 && (
+            <div className="flex gap-2 mt-2 pt-2 border-t border-white/[0.06] overflow-x-auto">
+              {shapesFor(shown(editingSegment)).map((shape, i) => (
+                <ChordDiagram
+                  key={i}
+                  shape={shape}
+                  color={`hsl(${hueOf(shown(editingSegment)) ?? 0} 65% 62%)`}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
 

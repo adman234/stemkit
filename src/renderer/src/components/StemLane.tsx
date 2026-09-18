@@ -156,11 +156,11 @@ export function StemLane({
 
   return (
     <div
-      className={`group flex items-center gap-3 rounded-xl px-3 py-2 transition-all duration-200 glass ${
+      className={`group flex flex-wrap items-center gap-2 md:gap-3 rounded-xl px-2.5 md:px-3 py-2 transition-all duration-200 glass ${
         audible ? 'opacity-100' : 'opacity-45'
       }`}
     >
-      <div className="flex items-center gap-2.5 w-36 shrink-0">
+      <div className="flex items-center gap-2 md:gap-2.5 w-28 md:w-36 shrink-0">
         <span
           className="flex items-center justify-center w-7 h-7 rounded-lg"
           style={{ background: `${meta.color}22`, color: meta.color }}
@@ -196,11 +196,11 @@ export function StemLane({
       <canvas
         ref={canvasRef}
         onClick={handleSeek}
-        className="no-drag flex-1 h-14 rounded-lg cursor-pointer min-w-0"
+        className="no-drag order-last w-full h-10 md:order-none md:w-auto md:flex-1 md:h-14 rounded-lg cursor-pointer min-w-0"
       />
 
       <span className="shrink-0 flex items-center gap-2">
-        <span className="relative flex items-center w-24 2xl:w-36">
+        <span className="relative flex items-center w-20 md:w-24 2xl:w-36">
           <input
             type="range"
             min={MIN_DB}

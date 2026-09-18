@@ -94,3 +94,22 @@ input[type="range"]:hover::-webkit-slider-thumb {
   border: 1px solid rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(18px);
 }
+
+/* the library is a drawer on small screens, plain CSS so the slide does not
+   depend on utility class ordering */
+.drawer {
+  transition: transform 0.2s ease;
+}
+@media (max-width: 767px) {
+  .drawer {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 40;
+    transform: translateX(-100%);
+  }
+  .drawer.drawer-open {
+    transform: translateX(0);
+  }
+}

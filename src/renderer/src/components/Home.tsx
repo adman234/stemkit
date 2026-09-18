@@ -179,9 +179,9 @@ export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettin
   }
 
   return (
-    <div className="h-full flex flex-col items-center px-8 pt-[6vh] pb-6 overflow-y-auto">
+    <div className="h-full flex flex-col items-center px-3 md:px-8 pt-6 md:pt-[6vh] pb-6 overflow-y-auto">
       <div className="w-full max-w-2xl xl:max-w-4xl">
-        <h1 className="text-center text-[30px] font-bold tracking-tight leading-tight bg-gradient-to-r from-violet-300 via-white to-emerald-200 bg-clip-text text-transparent">
+        <h1 className="text-center text-[22px] md:text-[30px] font-bold tracking-tight leading-tight bg-gradient-to-r from-violet-300 via-white to-emerald-200 bg-clip-text text-transparent">
           Turn any YouTube track into stems.
         </h1>
         <p className="text-center text-white/45 mt-2.5 text-[14px]">
@@ -219,7 +219,7 @@ export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettin
                 <GearIcon className="w-3 h-3" />
               </button>
             </div>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {ENGINES.map((e) => {
                 const on = e.id === effective.engine
                 const downloadMb = e.id === 'best' ? notDownloaded(['sw']) : 0

@@ -105,10 +105,10 @@ export function Transport({
   youtubeUrl
 }: Props): React.ReactElement {
   return (
-    <div className="glass rounded-2xl px-5 py-4 mt-4 flex flex-col gap-4">
+    <div className="glass rounded-2xl px-3 md:px-5 py-3 md:py-4 mt-4 flex flex-col gap-3 md:gap-4">
       <SeekBar duration={duration} getPosition={getPosition} onSeek={onSeek} playing={playing} />
 
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <button
           onClick={onTogglePlay}
           disabled={duration === 0}
@@ -121,12 +121,12 @@ export function Transport({
           )}
         </button>
 
-        <div className="no-drag flex items-center gap-1 bg-white/5 rounded-full p-1">
+        <div className="no-drag flex items-center gap-1 bg-white/5 rounded-full p-1 overflow-x-auto max-w-full">
           {PRESETS.map((p) => (
             <button
               key={p.id}
               onClick={() => onPreset(p.id)}
-              className={`px-3.5 py-1.5 rounded-full text-[13px] font-medium transition-all ${
+              className={`px-2.5 md:px-3.5 py-1.5 rounded-full text-[13px] font-medium whitespace-nowrap transition-all ${
                 preset === p.id
                   ? 'bg-white/90 text-black'
                   : 'text-white/60 hover:text-white'
@@ -137,7 +137,7 @@ export function Transport({
           ))}
         </div>
 
-        <div className="flex items-center gap-3 w-44">
+        <div className="flex items-center gap-3 w-28 md:w-44">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" className="w-4 h-4 text-white/60 shrink-0">
             <path d="M11 5 6 9H3v6h3l5 4V5Z" />
             <path d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13" />

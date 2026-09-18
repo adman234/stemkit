@@ -48,6 +48,7 @@ export default function App(): React.ReactElement {
   const [appVersion, setAppVersion] = useState<string | undefined>(undefined)
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [navOpen, setNavOpen] = useState(false)
 
   useEffect(() => {
     void window.stemkit.envStatus().then(setStatus)
@@ -254,23 +255,45 @@ export default function App(): React.ReactElement {
   }
 
   return (
-    <div className="h-full flex">
+    <div className="h-full flex flex-col md:flex-row">
+      {/* a phone has no room for the library beside the player */}
+      <div className="md:hidden h-12 shrink-0 flex items-center gap-2 px-3 border-b border-white/[0.07]">
+        <button
+          onClick={() => setNavOpen(true)}
+          title="Library"
+          className="no-drag w-8 h-8 rounded-lg bg-white/5 text-white/70 flex items-center justify-center"
+        >
+          <svg viewBox="0 0 24 24" className="w-4 h-4" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+            <path d="M4 7h16M4 12h16M4 17h16" />
+          </svg>
+        </button>
+        <LogoMark className="w-6 h-6" />
+        <span className="font-semibold tracking-tight text-[14px]">StemKit</span>
+      </div>
       <Sidebar
+        open={navOpen}
+        onClose={() => setNavOpen(false)}
         songs={displaySongs}
         activeId={activeId}
         pending={pendingMap}
         update={update ?? undefined}
         appVersion={appVersion}
-        onSelect={(id) => setActiveId(id)}
+        onSelect={(id) => {
+          setActiveId(id)
+          setNavOpen(false)
+        }}
         onDelete={(id) => void deleteSong(id)}
-        onAdd={() => setActiveId(null)}
+        onAdd={() => {
+          setActiveId(null)
+          setNavOpen(false)
+        }}
         onInstallUpdate={() => window.stemkit.installUpdate()}
         onOpenSettings={() => {
           void window.stemkit.envStatus().then(setStatus)
           setSettingsOpen(true)
         }}
       />
-      <main className="flex-1 min-w-0">{main}</main>
+      <main className="flex-1 min-w-0 min-h-0">{main}</main>
       {settings && settingsOpen && (
         <Settings
           settings={settings}

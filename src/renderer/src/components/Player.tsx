@@ -358,15 +358,15 @@ export function Player({ song, settings }: Props): React.ReactElement {
 
   return (
     <div className="h-full flex flex-col">
-      <header className="drag-region h-14 shrink-0 flex items-center justify-between px-6">
+      <header className="drag-region h-12 md:h-14 shrink-0 flex items-center justify-between px-4 md:px-6">
         <h2 className="text-sm font-semibold truncate">{song.title}</h2>
       </header>
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-6">
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 md:px-6 pb-4 md:pb-6">
         <div className="w-full">
-          <div className="flex items-stretch gap-4 h-[220px] 2xl:h-[300px]">
+          <div className="flex flex-col md:flex-row md:items-stretch gap-3 md:gap-4 md:h-[220px] 2xl:h-[300px]">
             {!hideVideo && (
-              <div className="relative h-full aspect-video shrink-0">
+              <div className="relative w-full md:w-auto md:h-full aspect-video shrink-0">
                 <div className="absolute -inset-4 bg-violet-500/10 blur-3xl rounded-full pointer-events-none" />
                 <div className="absolute inset-0 rounded-xl overflow-hidden ring-1 ring-white/10 bg-black shadow-2xl shadow-black/60">
                   <div ref={containerRef} className="absolute inset-0 [&_iframe]:w-full [&_iframe]:h-full" />
@@ -386,14 +386,14 @@ export function Player({ song, settings }: Props): React.ReactElement {
               </div>
             )}
 
-            <aside className="flex-1 min-w-0 glass rounded-2xl px-6 py-5 rise-in flex flex-col justify-between">
+            <aside className="flex-1 min-w-0 glass rounded-2xl px-4 md:px-6 py-4 md:py-5 rise-in flex flex-col justify-between gap-3">
               <div className="flex items-center gap-4">
                 <Thumb
                   videoId={song.videoId}
-                  className="w-32 h-[72px] rounded-lg object-cover bg-white/5 shrink-0 block"
+                  className="hidden sm:block w-24 lg:w-32 h-[54px] lg:h-[72px] rounded-lg object-cover bg-white/5 shrink-0"
                 />
                 <div className="min-w-0 flex-1">
-                  <h3 className="text-xl font-semibold leading-snug truncate">{song.title}</h3>
+                  <h3 className="text-base md:text-xl font-semibold leading-snug truncate">{song.title}</h3>
                   <p className="text-xs text-white/45 mt-1.5 font-mono truncate">
                     {fmtTime(song.duration)} · added {addedLabel}
                     {song.took ? ` · split in ${fmtTime(song.took)}` : ''}
@@ -463,7 +463,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
                 </div>
               )}
 
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2 md:gap-3">
                 <button
                   onClick={exportAllStems}
                   disabled={decoding || !!decodeError}

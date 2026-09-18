@@ -1,9 +1,12 @@
 import type { Song } from '../../../shared/types'
 import { fmtTime } from '../lib/format'
 import { Thumb } from '../lib/thumbs'
-import { LogoMark, TrashIcon, PlusIcon, GearIcon } from './Icons'
+import { LogoMark, TrashIcon, PlusIcon, GearIcon, XIcon } from './Icons'
 
 interface Props {
+  // the sidebar is a drawer on small screens
+  open?: boolean
+  onClose?: () => void
   songs: Song[]
   activeId: string | null
   pending?: Record<string, { label: string; error?: boolean }>
@@ -17,6 +20,8 @@ interface Props {
 }
 
 export function Sidebar({
+  open = false,
+  onClose,
   songs,
   activeId,
   pending = {},
@@ -29,7 +34,15 @@ export function Sidebar({
   onOpenSettings
 }: Props): React.ReactElement {
   return (
-    <aside className="w-[264px] shrink-0 h-full flex flex-col border-r border-white/[0.07] bg-black/20">
+    <>
+      {open && (
+        <div className="md:hidden fixed inset-0 z-30 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      )}
+      <aside
+        className={`drawer ${
+          open ? 'drawer-open' : ''
+        } w-[264px] shrink-0 h-full flex flex-col border-r border-white/[0.07] bg-[#12111a] md:bg-black/20`}
+      >
       <div className="drag-region h-14 shrink-0 flex items-center gap-2.5 pl-[80px] pr-4">
         <LogoMark />
         <span className="font-semibold tracking-tight text-[15px]">StemKit</span>
@@ -39,6 +52,13 @@ export function Sidebar({
           className="no-drag ml-auto w-7 h-7 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 hover:text-white flex items-center justify-center transition-colors"
         >
           <GearIcon className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={onClose}
+          title="Close"
+          className="no-drag md:hidden w-7 h-7 rounded-lg bg-white/5 hover:bg-white/10 text-white/50 flex items-center justify-center"
+        >
+          <XIcon className="w-3.5 h-3.5" />
         </button>
       </div>
 
@@ -148,6 +168,7 @@ export function Sidebar({
           </span>
         </div>
       </div>
-    </aside>
+      </aside>
+    </>
   )
 }
