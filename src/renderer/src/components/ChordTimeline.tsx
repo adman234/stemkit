@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { ChordData, ChordSegment } from '../../../shared/types'
 import { shapesFor } from '../lib/guitar'
 import { ChordDiagram } from './ChordDiagram'
@@ -30,6 +31,7 @@ function shown(seg: ChordSegment): string {
 }
 
 export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverride }: Props): React.ReactElement {
+  const rootRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const trackRef = useRef<HTMLDivElement>(null)
   const markerRef = useRef<HTMLSpanElement>(null)
@@ -64,12 +66,31 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
     return () => cancelAnimationFrame(raf)
   }, [getPosition, span, zoom, segments])
 
+  /* editing one chord should not outlast the moment: clicking anywhere
+     outside the timeline, or pressing escape, puts the picker away */
+  useEffect(() => {
+    if (editing === null) return
+    const onPointer = (e: MouseEvent): void => {
+      if (!rootRef.current?.contains(e.target as Node)) setEditing(null)
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') setEditing(null)
+    }
+    document.addEventListener('mousedown', onPointer)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onPointer)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [editing])
+
   // wheel zoom needs a non-passive listener to stop the page scrolling
   useEffect(() => {
     const viewport = viewportRef.current
     if (!viewport) return
     const onWheel = (e: WheelEvent): void => {
       e.preventDefault()
+      setEditing(null)
       setZoom((z) => {
         const i = ZOOM_STEPS.indexOf(z)
         const next = e.deltaY < 0 ? i + 1 : i - 1
@@ -81,6 +102,7 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
   }, [])
 
   const stepZoom = (direction: number): void => {
+    setEditing(null)
     setZoom((z) => {
       const i = ZOOM_STEPS.indexOf(z)
       return ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, i + direction))]
@@ -98,7 +120,7 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
   }
 
   return (
-    <div className="glass rounded-2xl px-4 py-3 mt-4">
+    <div ref={rootRef} className="glass rounded-2xl px-4 py-3 mt-4">
       <div className="flex items-baseline justify-between gap-4 mb-2 flex-wrap">
         <div className="flex items-baseline gap-2.5 min-w-0">
           <span className="text-[11px] font-semibold uppercase tracking-widest text-white/30">Key</span>
@@ -137,7 +159,10 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
             </button>
             {following && (
               <button
-                onClick={() => setZoom(1)}
+                onClick={() => {
+                  setEditing(null)
+                  setZoom(1)
+                }}
                 title="Back to the whole song"
                 className="no-drag px-2 h-6 rounded-md bg-white/5 hover:bg-white/10 text-white/60 hover:text-white transition-colors"
               >
@@ -274,23 +299,23 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
         </div>
       )}
 
-      {hover && editing === null && shapesFor(hover.label).length > 0 && (
-        <div
-          className="fixed z-50 pointer-events-none rounded-xl bg-[#16151d] border border-white/[0.1] shadow-2xl px-3 py-2"
-          style={{ left: Math.max(8, hover.x - 120), top: Math.max(8, hover.y - 128) }}
-        >
-          <p className="text-[11px] font-semibold text-white/70 mb-1">{chordText(hover.label)} on guitar</p>
-          <div className="flex gap-2">
-            {shapesFor(hover.label).map((shape, i) => (
-              <ChordDiagram
-                key={i}
-                shape={shape}
-                color={`hsl(${hueOf(hover.label) ?? 0} 65% 62%)`}
-              />
-            ))}
-          </div>
-        </div>
-      )}
+      {hover &&
+        editing === null &&
+        shapesFor(hover.label).length > 0 &&
+        createPortal(
+          <div
+            className="fixed z-[100] pointer-events-none rounded-xl bg-[#16151d] border border-white/[0.1] shadow-2xl px-3 py-2"
+            style={{ left: Math.max(8, hover.x - 120), top: Math.max(8, hover.y - 128) }}
+          >
+            <p className="text-[11px] font-semibold text-white/70 mb-1">{chordText(hover.label)} on guitar</p>
+            <div className="flex gap-2">
+              {shapesFor(hover.label).map((shape, i) => (
+                <ChordDiagram key={i} shape={shape} color={`hsl(${hueOf(hover.label) ?? 0} 65% 62%)`} />
+              ))}
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   )
 }
