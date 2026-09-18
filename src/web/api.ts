@@ -100,6 +100,13 @@ const api: StemKitApi = {
     )
     return out
   },
+  getStemBuffer: async (videoId, stem) => {
+    const res = await fetch(
+      `/api/songs/${encodeURIComponent(videoId)}/stems/${encodeURIComponent(stem)}.wav`
+    )
+    if (!res.ok) throw new Error(`Could not load the ${stem} stem (HTTP ${res.status})`)
+    return new Uint8Array(await res.arrayBuffer())
+  },
   exportStem: async (videoId, stem) => {
     download(`/api/songs/${encodeURIComponent(videoId)}/stems/${encodeURIComponent(stem)}.wav?download=1`)
     return { saved: true }

@@ -211,6 +211,9 @@ export interface StemKitApi {
   listSongs(): Promise<Song[]>
   deleteSong(videoId: string): Promise<void>
   getBuffers(videoId: string): Promise<Record<string, Uint8Array>>
+  // web version: one stem at a time, so a phone never holds the whole song
+  // in memory twice over
+  getStemBuffer?(videoId: string, stem: string): Promise<Uint8Array>
   exportStem(videoId: string, stem: string): Promise<{ saved: boolean; path?: string }>
   exportAllStems(videoId: string): Promise<{ saved: boolean; path?: string; count?: number }>
   searchYouTube(query: string): Promise<SearchResult[]>

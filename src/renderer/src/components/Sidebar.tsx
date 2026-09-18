@@ -134,7 +134,7 @@ export function Sidebar({
                     e.stopPropagation()
                     onDelete(song.videoId)
                   }}
-                  className="no-drag opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-md hover:bg-white/10 text-white/40 hover:text-rose-300"
+                  className="no-drag p-2 md:p-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity rounded-md hover:bg-white/10 text-white/40 hover:text-rose-300"
                 >
                   <TrashIcon className="w-3.5 h-3.5" />
                 </span>

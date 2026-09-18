@@ -21,6 +21,15 @@ body,
   user-select: none;
 }
 
+/* the app blocks text selection, but form fields need it: without this some
+   mobile browsers will not put the caret in the field or raise the keyboard */
+input,
+textarea,
+select {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 .drag-region {
   -webkit-app-region: drag;
 }

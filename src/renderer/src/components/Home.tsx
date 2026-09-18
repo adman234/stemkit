@@ -30,6 +30,10 @@ interface Props {
 
 const SPLIT_KEY = 'stemkit.split'
 
+// pointer: fine means a mouse, where focusing the search box on arrival helps
+const AUTOFOCUS =
+  typeof window !== 'undefined' && window.matchMedia('(min-width: 768px) and (pointer: fine)').matches
+
 /* the panel keeps option flags even while their instrument is deselected, so
    they come back with it; normalizeSplit applies the rules when splitting */
 function loadSplit(): SplitOptions {
@@ -189,8 +193,10 @@ export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettin
         </p>
 
         <div className="mt-6 flex gap-2">
+          {/* autofocus on a phone takes the field without opening the keyboard,
+              so the first tap on it then does nothing */}
           <input
-            autoFocus
+            autoFocus={AUTOFOCUS}
             value={query}
             onChange={(e) => handleInput(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && submit()}

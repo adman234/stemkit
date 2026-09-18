@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppSettings, ChordData, Song, StemId } from '../../../shared/types'
-import { engine, decodePayload, type BufferMap } from '../lib/engine'
+import { DEFAULT_STEMS } from '../../../shared/types'
+import { audioContext, engine, decodePayload, type BufferMap } from '../lib/engine'
 import { buildStemMeta } from '../lib/stems'
 import { fmtTime } from '../lib/format'
 import { Thumb } from '../lib/thumbs'
@@ -14,19 +15,38 @@ import { DRUM_KIT, splitLabel } from '../../../shared/engines'
 
 type BufferCacheMap = BufferMap
 
+type Progress = (done: number, total: number) => void
+
 const bufferCache = new Map<string, Promise<BufferCacheMap>>()
 
-function getDecoded(videoId: string): Promise<BufferCacheMap> {
-  let entry = bufferCache.get(videoId)
+/* Fetch and decode a stem, then the next one. Loading them all at once needs
+   every encoded stem and every decoded stem in memory together, which a phone
+   will not survive on a song split into a dozen parts */
+async function loadBuffers(song: Song, onProgress: Progress): Promise<BufferCacheMap> {
+  const stems = song.stems?.length ? song.stems : DEFAULT_STEMS
+  const fetchStem = window.stemkit.getStemBuffer
+  if (!fetchStem) {
+    // the desktop app hands over every stem in one go
+    return decodePayload(await window.stemkit.getBuffers(song.videoId), onProgress)
+  }
+  const ctx = audioContext()
+  const out: BufferCacheMap = {}
+  for (let i = 0; i < stems.length; i++) {
+    const bytes = await fetchStem(song.videoId, stems[i])
+    out[stems[i] as StemId] = await ctx.decodeAudioData(bytes.buffer as ArrayBuffer)
+    onProgress(i + 1, stems.length)
+  }
+  return out
+}
+
+function getDecoded(song: Song, onProgress: Progress): Promise<BufferCacheMap> {
+  let entry = bufferCache.get(song.videoId)
   if (!entry) {
-    entry = window.stemkit
-      .getBuffers(videoId)
-      .then((payload) => decodePayload(payload))
-      .catch((err) => {
-        bufferCache.delete(videoId)
-        throw err
-      })
-    bufferCache.set(videoId, entry)
+    entry = loadBuffers(song, onProgress).catch((err) => {
+      bufferCache.delete(song.videoId)
+      throw err
+    })
+    bufferCache.set(song.videoId, entry)
   }
   return entry
 }
@@ -45,6 +65,8 @@ export function Player({ song, settings }: Props): React.ReactElement {
   const [ytReady, setYtReady] = useState(false)
   const [decoding, setDecoding] = useState(true)
   const [decodeError, setDecodeError] = useState<string | null>(null)
+  const [loaded, setLoaded] = useState<{ done: number; total: number } | null>(null)
+  const [reloads, setReloads] = useState(0)
   const [playing, setPlaying] = useState(false)
   const [duration, setDuration] = useState(song.duration || 0)
   const [bump, setBump] = useState(0)
@@ -92,7 +114,10 @@ export function Player({ song, settings }: Props): React.ReactElement {
 
     let cancelled = false
     setDecoding(true)
-    getDecoded(song.videoId)
+    setLoaded(null)
+    getDecoded(song, (done, total) => {
+      if (!cancelled) setLoaded({ done, total })
+    })
       .then((decoded) => {
         if (cancelled) return
         setBuffers(decoded)
@@ -114,7 +139,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
       hostRef.current?.destroy()
       hostRef.current = null
     }
-  }, [song.videoId])
+  }, [song.videoId, reloads])
 
   useEffect(() => {
     if (hideVideo) {
@@ -402,13 +427,25 @@ export function Player({ song, settings }: Props): React.ReactElement {
                   </p>
                 </div>
                 <span className="shrink-0 text-xs px-3 py-1.5 rounded-full bg-white/5 text-white/50 font-medium">
-                  {stemMeta.length} stems
+                  {decoding && loaded
+                    ? `loading ${loaded.done} of ${loaded.total}`
+                    : `${stemMeta.length || song.stems?.length || 0} stems`}
                 </span>
               </div>
 
-              {hideVideo && decodeError && (
+              {decodeError && (
                 <div className="rounded-xl bg-rose-500/10 border border-rose-400/20 px-3 py-2 text-xs text-rose-200 break-words">
                   {decodeError}
+                  <button
+                    onClick={() => {
+                      bufferCache.delete(song.videoId)
+                      setDecodeError(null)
+                      setReloads((n) => n + 1)
+                    }}
+                    className="no-drag ml-2 underline hover:text-white"
+                  >
+                    Try again
+                  </button>
                 </div>
               )}
 

@@ -2,21 +2,34 @@ import type { StemId } from '../../../shared/types'
 
 export type BufferMap = Partial<Record<StemId, AudioBuffer>>
 
+/* One context for the whole app. Browsers only allow a handful at once, and
+   opening a new one per song used to exhaust that on a phone after a few
+   songs: decoding then failed and the player came up with no stems at all */
+let shared: AudioContext | null = null
+
+export function audioContext(): AudioContext {
+  if (!shared) shared = new AudioContext()
+  return shared
+}
+
+/* Decodes one stem at a time and lets go of each stem's bytes as it goes.
+   Decoding a dozen stems at once needs every encoded and decoded copy in
+   memory together, which is enough to lose the tab on a phone */
 export async function decodePayload(
-  payload: Record<string, Uint8Array>
+  payload: Record<string, Uint8Array>,
+  onProgress?: (done: number, total: number) => void
 ): Promise<BufferMap> {
-  const ctx = new AudioContext()
-  void ctx.resume()
+  const ctx = audioContext()
   const ids = Object.keys(payload)
-  // decodeAudioData detaches the source buffer — the IPC payload is throwaway,
-  // so hand it over as-is (skips a full copy per stem)
-  const decoded = await Promise.all(
-    ids.map((id) => ctx.decodeAudioData(payload[id].buffer as ArrayBuffer))
-  )
   const out: BufferMap = {}
-  ids.forEach((id, i) => {
-    out[id as StemId] = decoded[i]
-  })
+  for (let i = 0; i < ids.length; i++) {
+    const id = ids[i]
+    // decodeAudioData detaches the source buffer, which is what we want:
+    // the encoded copy is throwaway once it is decoded
+    out[id as StemId] = await ctx.decodeAudioData(payload[id].buffer as ArrayBuffer)
+    delete payload[id]
+    onProgress?.(i + 1, ids.length)
+  }
   return out
 }
 
@@ -33,7 +46,7 @@ export class StemEngine {
 
   private ensureCtx(): AudioContext {
     if (!this.ctx) {
-      this.ctx = new AudioContext()
+      this.ctx = audioContext()
       this.master = this.ctx.createGain()
       this.master.gain.value = 0.9
       this.master.connect(this.ctx.destination)
