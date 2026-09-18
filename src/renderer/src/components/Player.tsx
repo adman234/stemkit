@@ -501,6 +501,12 @@ export function Player({ song, settings }: Props): React.ReactElement {
               duration={duration}
               getPosition={getPosition}
               onSeek={seekTo}
+              onOverride={(start, label) => {
+                void window.stemkit
+                  .setChordLabel?.(song.videoId, start, label)
+                  .then(setChords)
+                  .catch((err) => setChordsError(err instanceof Error ? err.message : String(err)))
+              }}
             />
           )}
 

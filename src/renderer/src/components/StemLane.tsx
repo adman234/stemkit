@@ -11,21 +11,35 @@ export interface StemMeta {
 
 const BUCKETS = 1600
 
-// faders run past unity so a stem can be pushed louder than the mix allows;
-// everything above 1 is drawn in red, because summing boosted stems can clip
-export const MAX_GAIN = 2
+/* Faders are marked in decibels, like a mixer, so most of the travel covers
+   normal levels and unity sits near the top. Past 0 dB a stem is louder than
+   the mix intends, which is drawn in red: summing boosted stems can clip. */
+const MIN_DB = -40
+export const MAX_DB = 10
 const BOOST_COLOR = '#FB7185'
+// the bottom of the fader is silence rather than a very quiet -40 dB
+const SILENT = MIN_DB
 
-function fmtGain(volume: number): string {
-  const db = 20 * Math.log10(volume)
+export function gainToDb(gain: number): number {
+  if (gain <= 0) return SILENT
+  return Math.max(SILENT, Math.min(MAX_DB, 20 * Math.log10(gain)))
+}
+
+export function dbToGain(db: number): number {
+  return db <= SILENT ? 0 : 10 ** (db / 20)
+}
+
+function fmtDb(db: number): string {
+  if (db <= SILENT) return 'off'
   return `${db > 0 ? '+' : ''}${db.toFixed(1)} dB`
 }
 
-function faderTrack(volume: number, color: string): string {
-  const pct = (volume / MAX_GAIN) * 100
-  const unity = 100 / MAX_GAIN
+function faderTrack(db: number, color: string): string {
+  const span = MAX_DB - MIN_DB
+  const pct = ((db - MIN_DB) / span) * 100
+  const unity = ((0 - MIN_DB) / span) * 100
   const rest = 'rgba(255,255,255,0.14)'
-  if (volume <= 1) {
+  if (db <= 0) {
     return `linear-gradient(to right, ${color} ${pct}%, ${rest} ${pct}%)`
   }
   return (
@@ -86,6 +100,7 @@ export function StemLane({
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const peaks = useMemo(() => (buffer ? computePeaks(buffer) : null), [buffer])
+  const db = gainToDb(volume)
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -188,25 +203,25 @@ export function StemLane({
         <span className="relative flex items-center w-24 2xl:w-36">
           <input
             type="range"
-            min={0}
-            max={MAX_GAIN}
-            step={0.01}
-            value={volume}
-            onChange={(e) => onVolume(parseFloat(e.target.value))}
+            min={MIN_DB}
+            max={MAX_DB}
+            step={0.5}
+            value={db}
+            onChange={(e) => onVolume(dbToGain(parseFloat(e.target.value)))}
             onDoubleClick={() => onVolume(1)}
-            title={`${fmtGain(volume)} (double click for 0 dB)`}
+            title={`${fmtDb(db)} (double click for 0 dB)`}
             className="no-drag w-full"
-            style={{ background: faderTrack(volume, meta.color) }}
+            style={{ background: faderTrack(db, meta.color) }}
           />
           {/* unity mark: everything to its right is a boost */}
           <span
             className="pointer-events-none absolute top-1/2 -translate-y-1/2 w-px h-2.5 bg-white/30"
-            style={{ left: `${100 / MAX_GAIN}%` }}
+            style={{ left: `${((0 - MIN_DB) / (MAX_DB - MIN_DB)) * 100}%` }}
           />
         </span>
         {/* fixed width so the lane does not shift when a boost appears */}
         <span className="w-12 text-[10px] font-mono tabular-nums text-right text-rose-300">
-          {volume > 1 ? fmtGain(volume) : ''}
+          {db > 0 ? fmtDb(db) : ''}
         </span>
       </span>
 

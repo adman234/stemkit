@@ -23,7 +23,7 @@
     "web:dev": "vite --config vite.web.config.mts",
     "web:server": "node scripts/build-server.mjs && node out/server/index.js",
     "web:typecheck": "tsc -p tsconfig.server.json && tsc -p tsconfig.webclient.json",
-    "web:test": "node scripts/video-sync-test.mjs"
+    "web:test": "node scripts/video-sync-test.mjs && node scripts/chord-timeline-test.mjs"
   },
   "dependencies": {
     "electron-updater": "^6.8.9"

@@ -37,6 +37,8 @@ export interface ChordSegment {
   label: string
   // what the model said before rare qualities were folded in
   raw: string
+  // set when the chord was corrected by hand in the player
+  user?: string
 }
 
 export interface ChordData {
@@ -239,5 +241,7 @@ export interface StemKitApi {
   // web version only: key and chords
   getChords?(videoId: string): Promise<ChordData | null>
   detectChords?(videoId: string): Promise<void>
+  // corrects one chord by hand; null puts the detected one back
+  setChordLabel?(videoId: string, start: number, label: string | null): Promise<ChordData>
   onChordsEvent?(cb: (ev: ChordsEvent) => void): () => void
 }

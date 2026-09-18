@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync } from 'fs'
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { extname, join, normalize, sep } from 'path'
 import { timingSafeEqual } from 'crypto'
 import type { AppSettings, EnvStatus } from '../shared/types'
@@ -198,6 +198,30 @@ route('GET', '/api/songs/:videoId/chords', async (_req, _res, params) => {
 route('POST', '/api/songs/:videoId/chords', async (_req, _res, params) => {
   void detectChords(videoIdParam(params))
   return null
+})
+
+const CHORD_LABEL = /^(N|[A-G]#?(:(maj|min|7|maj7|min7|sus4|dim|aug))?)$/
+
+/* corrects one chord by hand; the detected label is kept underneath so it
+   can be put back */
+route('PUT', '/api/songs/:videoId/chords/segment', async (req, _res, params) => {
+  const videoId = videoIdParam(params)
+  const file = chordsPath(videoId)
+  if (!existsSync(file)) throw new HttpError(404, 'No chords worked out for this song')
+  const body = await readJson(req)
+  if (typeof body.start !== 'number') throw new HttpError(400, 'Missing segment start')
+  const label = body.label === null ? null : String(body.label)
+  if (label !== null && !CHORD_LABEL.test(label)) throw new HttpError(400, `Not a chord: ${label}`)
+
+  const data = JSON.parse(readFileSync(file, 'utf8')) as {
+    segments: { start: number; label: string; user?: string }[]
+  }
+  const segment = data.segments.find((s) => Math.abs(s.start - (body.start as number)) < 0.01)
+  if (!segment) throw new HttpError(404, 'No chord starts there')
+  if (label === null || label === segment.label) delete segment.user
+  else segment.user = label
+  writeFileSync(file, JSON.stringify(data))
+  return data
 })
 
 route('POST', '/api/songs/:videoId/video', async (_req, _res, params) => {

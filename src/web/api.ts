@@ -149,7 +149,9 @@ const api: StemKitApi = {
   detectChords: async (videoId) => {
     await request('POST', `/api/songs/${encodeURIComponent(videoId)}/chords`)
   },
-  onChordsEvent: (cb) => subscribe<ChordsEvent>('chords:event', cb)
+  onChordsEvent: (cb) => subscribe<ChordsEvent>('chords:event', cb),
+  setChordLabel: (videoId, start, label) =>
+    request<ChordData>('PUT', `/api/songs/${encodeURIComponent(videoId)}/chords/segment`, { start, label })
 }
 
 window.stemkit = api
