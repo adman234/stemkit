@@ -80,6 +80,10 @@ export function msstScript(): string {
   return join(APP_DIR, 'python', 'msst.py')
 }
 
+export function chordsScript(): string {
+  return join(APP_DIR, 'python', 'chords.py')
+}
+
 export function modelsDir(): string {
   return join(DATA_DIR, 'models')
 }
@@ -476,6 +480,10 @@ const MODEL_FILES: Record<Exclude<ModelId, 'vocals'>, { file: string; url: strin
   drumsep: {
     file: 'MDX23C-DrumSep-aufr33-jarredou.ckpt',
     url: 'https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/MDX23C-DrumSep-aufr33-jarredou.ckpt'
+  },
+  chords: {
+    file: 'btc_model_large_voca.ckpt',
+    url: 'https://raw.githubusercontent.com/jayg996/BTC-ISMIR19/master/test/btc_model_large_voca.pt'
   }
 }
 

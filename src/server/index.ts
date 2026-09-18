@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
-import { createReadStream, existsSync, mkdirSync, statSync } from 'fs'
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync } from 'fs'
 import { extname, join, normalize, sep } from 'path'
 import { timingSafeEqual } from 'crypto'
 import type { AppSettings, EnvStatus } from '../shared/types'
@@ -24,7 +24,17 @@ import { writeZip, zipSize, type ZipEntry } from './zip'
 // desktop main-process modules, reused as-is (see scripts/build-server.mjs)
 import { loadSettings, saveSettings } from '../main/settings'
 import { loadSongs, mixWavPath, removeSong, stemsDir, stemsFor } from '../main/library'
-import { cancelJob, fetchVideo, hasVideo, searchYouTube, startJob, videoPath } from './pipeline'
+import {
+  cancelJob,
+  chordsPath,
+  detectChords,
+  fetchVideo,
+  hasChords,
+  hasVideo,
+  searchYouTube,
+  startJob,
+  videoPath
+} from './pipeline'
 import { MODELS } from '../shared/engines'
 import { clearThumbMemo, getThumb } from '../main/thumbs'
 
@@ -172,8 +182,23 @@ route('POST', '/api/env/update-ytdlp', async () => updateYtDlp())
 route('GET', '/api/version', async () => appVersion())
 
 route('GET', '/api/songs', async () =>
-  loadSongs().map((song) => (hasVideo(song.videoId) ? { ...song, video: true } : song))
+  loadSongs().map((song) => ({
+    ...song,
+    ...(hasVideo(song.videoId) ? { video: true } : {}),
+    ...(hasChords(song.videoId) ? { chords: true } : {})
+  }))
 )
+
+route('GET', '/api/songs/:videoId/chords', async (_req, _res, params) => {
+  const file = chordsPath(videoIdParam(params))
+  if (!existsSync(file)) throw new HttpError(404, 'No chords worked out for this song')
+  return JSON.parse(readFileSync(file, 'utf8'))
+})
+
+route('POST', '/api/songs/:videoId/chords', async (_req, _res, params) => {
+  void detectChords(videoIdParam(params))
+  return null
+})
 
 route('POST', '/api/songs/:videoId/video', async (_req, _res, params) => {
   void fetchVideo(videoIdParam(params))

@@ -7,6 +7,8 @@ import type {
   SearchResult,
   Song,
   StemKitApi,
+  ChordData,
+  ChordsEvent,
   UpdateEvent,
   VideoEvent
 } from '../shared/types'
@@ -136,7 +138,18 @@ const api: StemKitApi = {
   fetchVideo: async (videoId) => {
     await request('POST', `/api/songs/${encodeURIComponent(videoId)}/video`)
   },
-  onVideoEvent: (cb) => subscribe<VideoEvent>('video:event', cb)
+  onVideoEvent: (cb) => subscribe<VideoEvent>('video:event', cb),
+  getChords: async (videoId) => {
+    try {
+      return await request<ChordData>('GET', `/api/songs/${encodeURIComponent(videoId)}/chords`)
+    } catch {
+      return null
+    }
+  },
+  detectChords: async (videoId) => {
+    await request('POST', `/api/songs/${encodeURIComponent(videoId)}/chords`)
+  },
+  onChordsEvent: (cb) => subscribe<ChordsEvent>('chords:event', cb)
 }
 
 window.stemkit = api

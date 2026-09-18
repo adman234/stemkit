@@ -204,12 +204,9 @@ export function StemLane({
             style={{ left: `${100 / MAX_GAIN}%` }}
           />
         </span>
-        <span
-          className={`w-12 text-[10px] font-mono tabular-nums text-right transition-colors ${
-            volume > 1 ? 'text-rose-300' : 'text-transparent'
-          }`}
-        >
-          {fmtGain(volume)}
+        {/* fixed width so the lane does not shift when a boost appears */}
+        <span className="w-12 text-[10px] font-mono tabular-nums text-right text-rose-300">
+          {volume > 1 ? fmtGain(volume) : ''}
         </span>
       </span>
 

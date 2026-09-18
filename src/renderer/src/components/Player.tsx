@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AppSettings, Song, StemId } from '../../../shared/types'
+import type { AppSettings, ChordData, Song, StemId } from '../../../shared/types'
 import { engine, decodePayload, type BufferMap } from '../lib/engine'
 import { buildStemMeta } from '../lib/stems'
 import { fmtTime } from '../lib/format'
@@ -7,6 +7,7 @@ import { Thumb } from '../lib/thumbs'
 import { YouTubeHost, type YTState } from '../lib/youtube'
 import { LocalVideoHost, type VideoHost } from '../lib/video'
 import { StemLane } from './StemLane'
+import { ChordTimeline } from './ChordTimeline'
 import { Transport, type PresetId } from './Transport'
 import { DownloadIcon } from './Icons'
 import { DRUM_KIT, splitLabel } from '../../../shared/engines'
@@ -51,6 +52,9 @@ export function Player({ song, settings }: Props): React.ReactElement {
   const [videoPct, setVideoPct] = useState<number | null>(null)
   const [videoError, setVideoError] = useState<string | null>(null)
   const [videoStuck, setVideoStuck] = useState(false)
+  const [chords, setChords] = useState<ChordData | null>(null)
+  const [chordsBusy, setChordsBusy] = useState(false)
+  const [chordsError, setChordsError] = useState<string | null>(null)
 
   const [vols, setVols] = useState<Partial<Record<StemId, number>>>({})
   const [mutes, setMutes] = useState<Set<StemId>>(new Set())
@@ -155,6 +159,37 @@ export function Player({ song, settings }: Props): React.ReactElement {
       disposed = true
     }
   }, [song.videoId, song.video, decoding, decodeError, hideVideo])
+
+  useEffect(() => {
+    setChords(null)
+    setChordsError(null)
+    if (!song.chords || !window.stemkit.getChords) return
+    let alive = true
+    void window.stemkit.getChords(song.videoId).then((data) => {
+      if (alive) setChords(data)
+    })
+    return () => {
+      alive = false
+    }
+  }, [song.videoId, song.chords])
+
+  useEffect(() => {
+    if (!window.stemkit.onChordsEvent) return
+    return window.stemkit.onChordsEvent((ev) => {
+      if (ev.videoId !== song.videoId) return
+      if (ev.error) {
+        setChordsError(ev.error)
+        setChordsBusy(false)
+      } else if (ev.ready) {
+        setChordsBusy(false)
+        setChordsError(null)
+        void window.stemkit.getChords?.(song.videoId).then(setChords)
+      } else if (ev.running) {
+        setChordsBusy(true)
+        setChordsError(null)
+      }
+    })
+  }, [song.videoId])
 
   useEffect(() => {
     if (!window.stemkit.onVideoEvent) return
@@ -363,6 +398,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
                     {fmtTime(song.duration)} · added {addedLabel}
                     {song.took ? ` · split in ${fmtTime(song.took)}` : ''}
                     {song.options ? ` · ${splitLabel(song.options)}` : ''}
+                    {chords ? ` · ${chords.key.name}` : ''}
                   </p>
                 </div>
                 <span className="shrink-0 text-xs px-3 py-1.5 rounded-full bg-white/5 text-white/50 font-medium">
@@ -384,6 +420,26 @@ export function Player({ song, settings }: Props): React.ReactElement {
                   </span>
                 ))}
               </div>
+
+              {!song.chords && window.stemkit.detectChords && (
+                <div className="text-[11.5px] leading-snug">
+                  {chordsBusy ? (
+                    <span className="text-white/45">Working out the key and chords…</span>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        setChordsError(null)
+                        setChordsBusy(true)
+                        void window.stemkit.detectChords?.(song.videoId)
+                      }}
+                      className="no-drag text-violet-300 hover:text-violet-200 transition-colors"
+                    >
+                      Detect the key and chords →
+                    </button>
+                  )}
+                  {chordsError && <span className="block text-rose-300 mt-0.5">{chordsError}</span>}
+                </div>
+              )}
 
               {!hideVideo && !song.video && (
                 <div className="text-[11.5px] leading-snug">
@@ -438,6 +494,15 @@ export function Player({ song, settings }: Props): React.ReactElement {
             onMaster={setMaster}
             youtubeUrl={youtubeUrl}
           />
+
+          {chords && chords.segments.length > 0 && (
+            <ChordTimeline
+              chords={chords}
+              duration={duration}
+              getPosition={getPosition}
+              onSeek={seekTo}
+            />
+          )}
 
           <div className="mt-4 space-y-2">
             {decoding

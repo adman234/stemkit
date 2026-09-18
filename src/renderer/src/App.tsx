@@ -78,6 +78,10 @@ export default function App(): React.ReactElement {
     const offVideo = window.stemkit.onVideoEvent?.((ev) => {
       if (ev.ready) void window.stemkit.listSongs().then(setSongs)
     })
+    // chords finished for a song already in the library
+    const offChords = window.stemkit.onChordsEvent?.((ev) => {
+      if (ev.ready) void window.stemkit.listSongs().then(setSongs)
+    })
     void window.stemkit.getAppVersion().then(setAppVersion)
     return () => {
       offJob()
@@ -85,6 +89,7 @@ export default function App(): React.ReactElement {
       offUpdate()
       offSettings()
       offVideo?.()
+      offChords?.()
     }
   }, [])
 

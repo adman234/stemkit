@@ -16,6 +16,7 @@ import {
 } from '../shared/engines'
 import { broadcast } from './events'
 import {
+  chordsScript,
   ensureModel,
   getStatus,
   hasGpuAcceleration,
@@ -41,6 +42,101 @@ import {
 import { cacheThumbnail } from '../main/thumbs'
 
 export { searchYouTube } from '../main/pipeline'
+
+/* ---------- key and chords ---------- */
+
+export function chordsPath(videoId: string): string {
+  return join(songDir(videoId), 'chords.json')
+}
+
+export function hasChords(videoId: string): boolean {
+  return existsSync(chordsPath(videoId))
+}
+
+const chordJobs = new Set<string>()
+
+/* chords read best from the harmonic stems: no drums thumping through the
+   analysis and no vocals to mistake for harmony. Falls back to the mix */
+function chordInputs(videoId: string): { paths: string[]; source: string } {
+  const song = loadSongs().find((s) => s.videoId === videoId)
+  const dir = stemsDir(videoId)
+  const harmonic = ['bass', 'other', 'guitar', 'piano']
+    .filter((name) => song?.stems?.includes(name as never))
+    .map((name) => join(dir, `${name}.wav`))
+    .filter((file) => existsSync(file))
+  if (harmonic.length > 0) {
+    return {
+      paths: harmonic,
+      source: `stems: ${harmonic.map((f) => f.split(/[\\/]/).pop()?.replace('.wav', '')).join(', ')}`
+    }
+  }
+  return { paths: [mixWavPath(videoId)], source: 'full mix' }
+}
+
+/* runs chord detection for a song already in the library */
+export async function detectChords(videoId: string): Promise<void> {
+  if (chordJobs.has(videoId)) return
+  if (!existsSync(songDir(videoId))) {
+    broadcast('chords:event', { videoId, error: 'That song is not in the library' })
+    return
+  }
+  chordJobs.add(videoId)
+  broadcast('chords:event', { videoId, running: true })
+  try {
+    const ok = await ensureModel('chords')
+    if (!ok) throw new Error('Could not download the chord model')
+    const { paths, source } = chordInputs(videoId)
+    const gpu = loadSettings().gpuSplit && (await hasGpuAcceleration())
+    await runChords(videoId, paths, source, gpu ? 'cuda' : 'cpu')
+    broadcast('chords:event', { videoId, ready: true })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    broadcast('chords:event', { videoId, error: message })
+    console.error(`[chords] ${videoId}: ${message}`)
+  } finally {
+    chordJobs.delete(videoId)
+  }
+}
+
+function runChords(
+  videoId: string,
+  paths: string[],
+  source: string,
+  device: string,
+  job?: ActiveJob,
+  onPct?: (pct: number, message?: string) => void
+): Promise<void> {
+  const args = [
+    chordsScript(),
+    '--input',
+    ...paths,
+    '--out',
+    chordsPath(videoId),
+    '--ckpt-dir',
+    modelsDir(),
+    '--device',
+    device,
+    '--source',
+    source
+  ]
+  const holder: ActiveJob = job ?? { videoId, tag: 'chords', cancelled: false, standalone: true }
+  return runProcess(holder, venvPython(), args, {
+    onLine: (line) => {
+      if (!onPct) return
+      let parsed: Record<string, unknown>
+      try {
+        parsed = JSON.parse(line)
+      } catch {
+        return
+      }
+      if (parsed.type !== 'progress') return
+      const pct = Number(parsed.pct ?? 0)
+      const message = typeof parsed.message === 'string' ? parsed.message : undefined
+      if (message && pct === 0) onPct(0, message)
+      else onPct(pct, message)
+    }
+  })
+}
 
 /* ---------- video for local playback ---------- */
 
@@ -163,6 +259,9 @@ interface ActiveJob {
   tag: string
   cancelled: boolean
   proc?: ChildProcess
+  // work started on its own (chords for a song already in the library)
+  // rather than as part of a split, so it is not in the jobs map
+  standalone?: boolean
 }
 
 const jobs = new Map<string, ActiveJob>()
@@ -202,7 +301,7 @@ function progress(job: ActiveJob, stage: JobStage, pct: number, message?: string
 }
 
 function alive(job: ActiveJob): boolean {
-  return !job.cancelled && jobs.has(job.videoId)
+  return !job.cancelled && (job.standalone || jobs.has(job.videoId))
 }
 
 /* requests from the desktop-style API (no options) map onto the Quick engine
@@ -458,6 +557,10 @@ async function separate(job: ActiveJob, o: SplitOptions, steps: PlannedStep[], d
         ...(o.secondPass ? ['--second-pass'] : []),
         ...(vocalsFirst ? ['--average', `vocals=${join(studioDir, 'vocals.wav')}`] : [])
       ], onPct)
+    } else if (step === 'chords') {
+      onPct(0, 'Working out the key and chords')
+      const { paths, source } = chordInputs(videoId)
+      await runChords(videoId, paths, source, device, job, onPct)
     } else if (step === 'drumsep') {
       onPct(0, 'Splitting the drum kit')
       const drums = join(stems, 'drums.wav')

@@ -56,7 +56,7 @@ export function engineInfo(id: EngineId | undefined): EngineInfo {
   return ENGINES.find((e) => e.id === id) ?? ENGINES[0]
 }
 
-export type OptionId = 'studioVocals' | 'secondPass' | 'drumKit'
+export type OptionId = 'studioVocals' | 'secondPass' | 'drumKit' | 'chords'
 
 export interface OptionInfo {
   id: OptionId
@@ -70,7 +70,8 @@ export interface OptionInfo {
 export const OPTIONS: OptionInfo[] = [
   { id: 'studioVocals', name: 'Studio vocals', needs: 'vocals', models: ['vocals'] },
   { id: 'secondPass', name: 'Second pass', models: [] },
-  { id: 'drumKit', name: 'Split drum kit', needs: 'drums', models: ['drumsep'] }
+  { id: 'drumKit', name: 'Split drum kit', needs: 'drums', models: ['drumsep'] },
+  { id: 'chords', name: 'Key and chords', models: ['chords'] }
 ]
 
 export function optionBlurb(id: OptionId, engine: EngineId): string {
@@ -84,17 +85,21 @@ export function optionBlurb(id: OptionId, engine: EngineId): string {
       ? 'Two shifted passes averaged together. A tiny gain in testing, for about twice the work.'
       : 'Twice the overlap between chunks. A tiny gain in testing (under 0.1 dB), for about twice the work.'
   }
-  return 'Splits the drums into kick, snare, toms, hi-hat, ride and crash, each on its own fader.'
+  if (id === 'drumKit') {
+    return 'Splits the drums into kick, snare, toms, hi-hat, ride and crash, each on its own fader.'
+  }
+  return 'Works out the key and marks the chords on a timeline you can click through. It listens to the stems without drums or vocals, which is easier to read chords from than the full mix.'
 }
 
 /* ---------- model checkpoints ---------- */
 
-export type ModelId = 'vocals' | 'sw' | 'drumsep'
+export type ModelId = 'vocals' | 'sw' | 'drumsep' | 'chords'
 
 export const MODELS: Record<ModelId, { name: string; sizeMb: number }> = {
   vocals: { name: 'Studio vocals (Mel-Band Roformer)', sizeMb: 913 },
   sw: { name: 'Best engine (BS-Roformer SW)', sizeMb: 699 },
-  drumsep: { name: 'Drum kit (MDX23C DrumSep)', sizeMb: 438 }
+  drumsep: { name: 'Drum kit (MDX23C DrumSep)', sizeMb: 438 },
+  chords: { name: 'Key and chords (BTC)', sizeMb: 12 }
 }
 
 export function modelsFor(o: SplitOptions): ModelId[] {
@@ -102,6 +107,7 @@ export function modelsFor(o: SplitOptions): ModelId[] {
   if (o.engine === 'best') ids.push('sw')
   if (o.studioVocals && o.stems.includes('vocals')) ids.push('vocals')
   if (o.drumKit && o.stems.includes('drums')) ids.push('drumsep')
+  if (o.chords) ids.push('chords')
   return ids
 }
 
@@ -112,7 +118,8 @@ export const DEFAULT_SPLIT: SplitOptions = {
   stems: ['vocals', 'drums', 'bass', 'other'],
   studioVocals: false,
   secondPass: false,
-  drumKit: false
+  drumKit: false,
+  chords: false
 }
 
 /* validates options from a client (or localStorage) into a usable shape */
@@ -127,7 +134,8 @@ export function normalizeSplit(raw: unknown): SplitOptions {
     stems: stems.length ? stems : [...DEFAULT_SPLIT.stems],
     studioVocals: o.studioVocals === true && stems.includes('vocals'),
     secondPass: o.secondPass === true,
-    drumKit: o.drumKit === true && stems.includes('drums')
+    drumKit: o.drumKit === true && stems.includes('drums'),
+    chords: o.chords === true
   }
 }
 
@@ -149,7 +157,8 @@ export function splitTag(o: SplitOptions): string {
     o.engine +
     (o.studioVocals ? '+vocals' : '') +
     (o.secondPass ? '+2pass' : '') +
-    (o.drumKit ? '+kit' : '')
+    (o.drumKit ? '+kit' : '') +
+    (o.chords ? '+chords' : '')
   )
 }
 
@@ -158,19 +167,28 @@ export function splitLabel(o: SplitOptions): string {
   if (o.studioVocals) parts.push('studio vocals')
   if (o.secondPass) parts.push('second pass')
   if (o.drumKit) parts.push('drum kit')
+  if (o.chords) parts.push('chords')
   return parts.join(' · ')
 }
 
 /* ---------- time estimates ---------- */
 
-type Step = 'demucs' | 'demucs6' | 'vocals' | 'sw' | 'drumsep'
+type Step = 'demucs' | 'demucs6' | 'vocals' | 'sw' | 'drumsep' | 'chords'
 
 // seconds of processing per minute of audio
 const RATE: Record<'gpu' | 'cpu', Record<Step, number>> = {
-  gpu: { demucs: 0.7, demucs6: 0.8, vocals: 2.5, sw: 5.2, drumsep: 1.8 },
-  cpu: { demucs: 10, demucs6: 11, vocals: 150, sw: 220, drumsep: 75 }
+  gpu: { demucs: 0.7, demucs6: 0.8, vocals: 2.5, sw: 5.2, drumsep: 1.8, chords: 1.1 },
+  cpu: { demucs: 10, demucs6: 11, vocals: 150, sw: 220, drumsep: 75, chords: 5.3 }
 }
-const SECOND_PASS: Record<Step, number> = { demucs: 2.3, demucs6: 2.3, vocals: 2, sw: 2, drumsep: 2 }
+// the second pass is about the separation models; chord detection ignores it
+const SECOND_PASS: Record<Step, number> = {
+  demucs: 2.3,
+  demucs6: 2.3,
+  vocals: 2,
+  sw: 2,
+  drumsep: 2,
+  chords: 1
+}
 // model load and process start, per step
 const OVERHEAD = { gpu: 4, cpu: 6 }
 // reading the video, downloading the audio and converting it
@@ -190,6 +208,7 @@ export function planSteps(o: SplitOptions, minutes: number, gpu: boolean): Plann
   else if (o.stems.includes('guitar') || o.stems.includes('piano')) steps.push('demucs6')
   else if (!(o.studioVocals && o.stems.length === 1 && wantsVocals)) steps.push('demucs')
   if (o.drumKit && o.stems.includes('drums')) steps.push('drumsep')
+  if (o.chords) steps.push('chords')
   return steps.map((step) => ({
     step,
     seconds: OVERHEAD[kind] + RATE[kind][step] * minutes * (o.secondPass ? SECOND_PASS[step] : 1)

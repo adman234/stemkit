@@ -46,6 +46,9 @@ wget -O /boot/config/plugins/dockerMan/templates-user/my-stemkit.xml https://raw
 | Studio vocals | Mel-Band Roformer vocal model. On Quick it takes the vocals out first (vocals 8.5 to 11.5 dB); on Best it is blended with the engine's vocals (11.7 to 12.2 dB) | | +15 s | about 2.1 GB | 913 MB |
 | Second pass | Twice the chunk overlap (two shifted passes on Quick). Under 0.1 dB better in testing | | about 2x | same | none |
 | Split drum kit | MDX23C DrumSep turns the drums stem into kick, snare, toms, hi-hat, ride and crash | | +10 s | about 1.2 GB | 438 MB |
+| Key and chords | BTC chord recognition marks the chords on a timeline and names the key. It listens to the harmonic stems, not the full mix | | +5 s | about 0.6 GB | 12 MB |
+
+Chords and key show as a clickable timeline in the player, and any song already in the library can be analysed from a link there without splitting it again. On a synthesised progression with known chords the labels matched 93% of the time (99% counting roots only). Real music is harder: it reads pop, rock and folk well, and struggles with dense or ambiguous material, where the key confidence shown in the player drops. `python/chords.py` writes `chords.json` next to the stems.
 
 Scores are the median SDR over the 50 MUSDB18 test clips, averaged over vocals, drums, bass and other (higher is cleaner). Steps run one after another, so peak VRAM is the largest single step, not the sum; two songs splitting at once need about twice that. On a CPU, Quick stays reasonable but the roformer models take 15 minutes or more per song. Models download into `/config/models` the first time they are needed, or ahead of time from Settings.
 

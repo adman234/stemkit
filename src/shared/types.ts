@@ -26,6 +26,36 @@ export interface SplitOptions {
   secondPass: boolean
   // split the drums stem into kick, snare, toms, hi-hat, ride and crash
   drumKit: boolean
+  // work out the key and the chord progression
+  chords: boolean
+}
+
+export interface ChordSegment {
+  start: number
+  end: number
+  // the chord as shown, e.g. 'F#:min7', or 'N' for no chord
+  label: string
+  // what the model said before rare qualities were folded in
+  raw: string
+}
+
+export interface ChordData {
+  key: {
+    tonic: string
+    mode: string
+    name: string
+    // 0 to 1: how far clear of the best key that is not the relative one
+    confidence: number
+    alternative: string
+    relative: string
+  }
+  tempo: number | null
+  beats: number[]
+  segments: ChordSegment[]
+  duration: number
+  // which audio it listened to
+  source: string
+  model: string
 }
 
 export interface ModelStatus {
@@ -55,12 +85,22 @@ export interface Song {
   options?: SplitOptions
   // web version: a downloaded video file is on the server for this song
   video?: boolean
+  // web version: key and chords have been worked out for this song
+  chords?: boolean
 }
 
 // web version: progress of a video download
 export interface VideoEvent {
   videoId: string
   pct?: number
+  ready?: boolean
+  error?: string
+}
+
+// web version: progress of chord detection on a song already in the library
+export interface ChordsEvent {
+  videoId: string
+  running?: boolean
   ready?: boolean
   error?: string
 }
@@ -196,4 +236,8 @@ export interface StemKitApi {
   // web version only: downloading the video for local playback
   fetchVideo?(videoId: string): Promise<void>
   onVideoEvent?(cb: (ev: VideoEvent) => void): () => void
+  // web version only: key and chords
+  getChords?(videoId: string): Promise<ChordData | null>
+  detectChords?(videoId: string): Promise<void>
+  onChordsEvent?(cb: (ev: ChordsEvent) => void): () => void
 }

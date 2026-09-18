@@ -9,6 +9,8 @@ rotary-embedding-torch==0.9.1
 packaging
 # model configs for msst.py (demucs pulls it in too)
 pyyaml
+# CQT and beat tracking for chords.py
+librosa>=0.10,<1
 # unpinned on purpose: YouTube breaks old releases, and the container also
 # refreshes these on start (YTDLP_AUTO_UPDATE)
 yt-dlp
