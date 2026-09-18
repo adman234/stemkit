@@ -113,13 +113,16 @@ export function modelsFor(o: SplitOptions): ModelId[] {
 
 /* ---------- planning ---------- */
 
+/* Every instrument, on both engines: the guitar and piano stems cost almost
+   nothing (quick switches to the 6-stem demucs, best already separates six),
+   and an empty lane is easier to ignore than a missing one is to notice. */
 export const DEFAULT_SPLIT: SplitOptions = {
   engine: 'quick',
-  stems: ['vocals', 'drums', 'bass', 'other'],
+  stems: [...INSTRUMENTS],
   studioVocals: false,
   secondPass: false,
   drumKit: false,
-  chords: false
+  chords: true
 }
 
 /* validates options from a client (or localStorage) into a usable shape */

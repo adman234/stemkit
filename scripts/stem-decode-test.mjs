@@ -1,8 +1,7 @@
 // Checks how a stem turns into an AudioBuffer. The splitter writes 32-bit
 // float WAVs, which Firefox refuses to hand to decodeAudioData, so those are
-// parsed in the app: this pins down that the samples survive the trip, that
-// light playback thins them to mono without wrecking the signal, and that
-// anything that is not a WAV still goes to the browser's own decoder.
+// parsed in the app: this pins down that the samples survive the trip and
+// that anything which is not a WAV still goes to the browser's own decoder.
 // Run with: npm run web:test
 import { build } from 'esbuild'
 import { mkdtempSync } from 'fs'
@@ -12,7 +11,6 @@ import { pathToFileURL } from 'url'
 
 /* ---------- a browser, more or less ---------- */
 
-let light = false
 let decodeCalls = 0
 
 class FakeAudioBuffer {
@@ -53,10 +51,8 @@ globalThis.CustomEvent = class CustomEvent {
   }
 }
 globalThis.localStorage = {
-  getItem: () => (light ? '1' : '0'),
-  setItem: (_k, v) => {
-    light = v === '1'
-  }
+  getItem: () => null,
+  setItem: () => {}
 }
 globalThis.window = {
   matchMedia: () => ({ matches: false }),
@@ -73,7 +69,7 @@ await build({
   platform: 'neutral',
   logLevel: 'error'
 })
-const { decodeStem, setLightPlayback } = await import(pathToFileURL(bundle).href)
+const { decodeStem } = await import(pathToFileURL(bundle).href)
 
 /* ---------- WAV files to feed it ---------- */
 
@@ -136,8 +132,7 @@ function check(name, ok, detail) {
 
 const ramp = (f, c) => Math.fround((f % 50) / 100 - (c === 1 ? 0.25 : 0))
 
-// 1. a float WAV, at full quality, comes back exactly as it went in
-setLightPlayback(false)
+// 1. a float WAV comes back exactly as it went in
 let buffer = await decodeStem(wav({ frames: 441, sample: ramp }))
 check('a 32-bit float WAV decodes without the browser', buffer.numberOfChannels === 2, `${buffer.numberOfChannels} channels`)
 check('it keeps the sample rate', buffer.sampleRate === 44100, String(buffer.sampleRate))
@@ -159,31 +154,16 @@ check('a 16-bit WAV decodes', Math.abs(buffer.getChannelData(0)[30] - ramp(30, 0
 buffer = await decodeStem(wav({ format: 1, bits: 24, frames: 441, sample: ramp }))
 check('a 24-bit WAV decodes', Math.abs(buffer.getChannelData(0)[30] - ramp(30, 0)) < 1e-6)
 
-// 4. light playback: mono, lower rate, and the signal still holds its level
-setLightPlayback(true)
-buffer = await decodeStem(wav({ frames: 44100, sample: () => 1 }))
-check('light playback is mono', buffer.numberOfChannels === 1, `${buffer.numberOfChannels} channels`)
-check('light playback drops the rate', buffer.sampleRate === 24000, String(buffer.sampleRate))
-check('light playback keeps the duration', Math.abs(buffer.duration - 1) < 0.01, `${buffer.duration.toFixed(3)}s`)
+// 4. a stereo file keeps both channels, and opposite channels stay opposite
+buffer = await decodeStem(wav({ frames: 4410, sample: (_f, c) => (c === 0 ? 0.5 : -0.5) }))
+check('both channels survive', buffer.numberOfChannels === 2)
 check(
-  'light playback keeps the level',
-  buffer.getChannelData(0).every((v) => Math.abs(v - 1) < 1e-6)
-)
-// 44.1 kHz stereo is 352800 bytes a second, 24 kHz mono is 96000
-const memory = buffer.length * buffer.numberOfChannels * 4
-check('light playback is a quarter of the memory', memory * 3.6 <= 44100 * 2 * 4, `${memory} bytes per second`)
-
-// a quiet stem should not come back loud, or vice versa: averaging channels
-// must not double the level
-buffer = await decodeStem(wav({ frames: 4410, sample: (_f, c) => (c === 0 ? 0.5 : -0.5) })) // out of phase
-check(
-  'opposite channels cancel rather than clip',
-  buffer.getChannelData(0).every((v) => Math.abs(v) < 1e-6)
+  'the channels are not mixed together',
+  buffer.getChannelData(0)[10] === 0.5 && buffer.getChannelData(1)[10] === -0.5
 )
 
 // 5. anything that is not a WAV goes to the browser, and its failure is the
 // one the player reports
-setLightPlayback(false)
 decodeCalls = 0
 const notWav = new TextEncoder().encode('<!doctype html><title>404</title>').buffer
 let message = ''

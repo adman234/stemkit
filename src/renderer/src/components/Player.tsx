@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppSettings, ChordData, Song, StemId } from '../../../shared/types'
 import { DEFAULT_STEMS } from '../../../shared/types'
-import { decodeStem, engine, decodePayload, lightPlayback, type BufferMap } from '../lib/engine'
+import { decodeStem, engine, decodePayload, type BufferMap } from '../lib/engine'
 import { buildStemMeta } from '../lib/stems'
 import { fmtTime } from '../lib/format'
 import { Thumb } from '../lib/thumbs'
@@ -57,17 +57,13 @@ async function loadBuffers(song: Song, onProgress: Progress): Promise<BufferCach
     }
     const seconds = (performance.now() - started) / 1000
     const summary = `${(bytes / 1048576).toFixed(0)} MB in ${seconds.toFixed(0)}s${
-      lightPlayback() ? ' · light playback' : ''
-    }${loadedStem.compressed ? '' : ' · full quality audio, which is slower to load'}`
+      loadedStem.compressed ? '' : ' · full quality audio, which is slower to load'
+    }`
     onProgress(i + 1, stems.length, failed.length ? `${summary} · ${failed.length} failed` : summary)
   }
   if (failed.length && !Object.keys(out).length) throw new Error(failed.join(' · '))
   if (failed.length) onProgress(stems.length, stems.length, `could not play ${failed.join(' · ')}`)
   return out
-}
-
-export function forgetDecoded(): void {
-  bufferCache.clear()
 }
 
 function getDecoded(song: Song, onProgress: Progress): Promise<BufferCacheMap> {
@@ -118,9 +114,6 @@ export function Player({ song, settings }: Props): React.ReactElement {
   const stemMeta = useMemo(() => buildStemMeta(Object.keys(buffers) as StemId[]), [buffers])
 
   const youtubeUrl = `https://www.youtube.com/watch?v=${song.videoId}`
-  // stems always play locally from the library; hiding the video just stops
-  // streaming it from YouTube (and switches thumbnails to the local cache)
-  const hideVideo = settings?.hideVideo ?? false
   const addedLabel = new Date(song.addedAt).toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
@@ -173,12 +166,6 @@ export function Player({ song, settings }: Props): React.ReactElement {
   }, [song.videoId, reloads])
 
   useEffect(() => {
-    if (hideVideo) {
-      hostRef.current?.destroy()
-      hostRef.current = null
-      setYtReady(false)
-      return
-    }
     if (decoding || decodeError) return
     const wantsLocal = !!song.video
     if (hostRef.current) {
@@ -214,7 +201,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
     return () => {
       disposed = true
     }
-  }, [song.videoId, song.video, decoding, decodeError, hideVideo])
+  }, [song.videoId, song.video, decoding, decodeError])
 
   useEffect(() => {
     setChords(null)
@@ -228,15 +215,6 @@ export function Player({ song, settings }: Props): React.ReactElement {
       alive = false
     }
   }, [song.videoId, song.chords])
-
-  useEffect(() => {
-    const onQuality = (): void => {
-      forgetDecoded()
-      setReloads((n) => n + 1)
-    }
-    window.addEventListener('stemkit:playback-quality', onQuality)
-    return () => window.removeEventListener('stemkit:playback-quality', onQuality)
-  }, [])
 
   useEffect(() => {
     if (!window.stemkit.onChordsEvent) return
@@ -334,7 +312,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
       hostRef.current?.play()
       setPlaying(true)
     }
-  }, [decoding, decodeError, hideVideo])
+  }, [decoding, decodeError])
 
   const seekTo = useCallback(
     (t: number): void => {
@@ -430,26 +408,24 @@ export function Player({ song, settings }: Props): React.ReactElement {
       <div className="flex-1 min-h-0 overflow-y-auto px-3 md:px-6 pb-4 md:pb-6">
         <div className="w-full">
           <div className="flex flex-col md:flex-row md:items-stretch gap-3 md:gap-4 md:h-[220px] 2xl:h-[300px]">
-            {!hideVideo && (
-              <div className="relative w-full md:w-auto md:h-full aspect-video shrink-0">
-                <div className="absolute -inset-4 bg-violet-500/10 blur-3xl rounded-full pointer-events-none" />
-                <div className="absolute inset-0 rounded-xl overflow-hidden ring-1 ring-white/10 bg-black shadow-2xl shadow-black/60">
-                  <div ref={containerRef} className="absolute inset-0 [&_iframe]:w-full [&_iframe]:h-full" />
-                  {!ytReady && (
-                    <div className="absolute inset-0 flex items-center justify-center animate-pulse">
-                      <span className="text-[10px] text-white/40 tracking-widest uppercase">loading…</span>
+            <div className="relative w-full md:w-auto md:h-full aspect-video shrink-0">
+              <div className="absolute -inset-4 bg-violet-500/10 blur-3xl rounded-full pointer-events-none" />
+              <div className="absolute inset-0 rounded-xl overflow-hidden ring-1 ring-white/10 bg-black shadow-2xl shadow-black/60">
+                <div ref={containerRef} className="absolute inset-0 [&_iframe]:w-full [&_iframe]:h-full" />
+                {!ytReady && (
+                  <div className="absolute inset-0 flex items-center justify-center animate-pulse">
+                    <span className="text-[10px] text-white/40 tracking-widest uppercase">loading…</span>
+                  </div>
+                )}
+                {decodeError && (
+                  <div className="absolute inset-x-3 bottom-3 flex justify-center rise-in">
+                    <div className="glass rounded-lg px-3 py-1.5 text-xs text-rose-300 break-words">
+                      {decodeError}
                     </div>
-                  )}
-                  {decodeError && (
-                    <div className="absolute inset-x-3 bottom-3 flex justify-center rise-in">
-                      <div className="glass rounded-lg px-3 py-1.5 text-xs text-rose-300 break-words">
-                        {decodeError}
-                      </div>
-                    </div>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
-            )}
+            </div>
 
             <aside className="flex-1 min-w-0 glass rounded-2xl px-4 md:px-6 py-4 md:py-5 rise-in flex flex-col justify-between gap-3">
               <div className="flex items-center gap-4">
@@ -519,7 +495,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
                 </div>
               )}
 
-              {!hideVideo && !song.video && (
+              {!song.video && (
                 <div className="text-[11.5px] leading-snug">
                   {videoPct !== null ? (
                     <span className="text-white/45 font-mono">Downloading video… {videoPct}%</span>

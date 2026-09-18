@@ -13,6 +13,7 @@ type UsedByDesktopModules =
   | 'separateScript'
   | 'roformerScript'
   | 'modelsDir'
+  | 'songsDir'
   | 'ensureEngineDeps'
   | 'ensureVocalsEngine'
   | 'ensureFtWeights'

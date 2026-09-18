@@ -61,7 +61,7 @@ Scores are the median SDR over the 50 MUSDB18 test clips, averaged over vocals, 
 
 `npm run web:test` runs a simulation of the sync loop against a fake video element, including a stalled video and a browser that refuses to play.
 
-Everything persistent is under `/config`: `songs/` (the library), `models/` (optional checkpoints and the demucs weights), `settings.json`, `library.json` and `thumbs/`. If YouTube starts answering with "sign in to confirm you're not a bot", export a Netscape format `cookies.txt` from a logged in browser and put it at `/config/cookies.txt`.
+Everything persistent is under `/config`: `songs/` (the library), `models/` (optional checkpoints and the demucs weights), `settings.json`, `library.json` and `thumbs/`. The two that grow can be sent elsewhere without moving the rest: mount another volume and point `STEMKIT_SONGS` or `STEMKIT_MODELS` at it (`-v /mnt/user/media/stemkit:/songs -e STEMKIT_SONGS=/songs`). Both are also in the Unraid template under advanced settings. Moving an existing library is a matter of stopping the container, copying `songs/` across and setting the variable. If YouTube starts answering with "sign in to confirm you're not a bot", export a Netscape format `cookies.txt` from a logged in browser and put it at `/config/cookies.txt`.
 
 Differences from the desktop app:
 

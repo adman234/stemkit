@@ -62,7 +62,6 @@ ENV STEMKIT_BUILD=${GIT_SHA} \
     PORT=8080 \
     HOME=/config/home \
     XDG_CACHE_HOME=/config/cache \
-    TORCH_HOME=/config/models/torch \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility \
     PUID=99 \

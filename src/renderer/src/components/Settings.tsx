@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import type { AppSettings, EngineStatus } from '../../../shared/types'
 import { VIDEO_HEIGHTS } from '../../../shared/types'
 import { XIcon } from './Icons'
-import { lightPlayback, setLightPlayback } from '../lib/engine'
 
 interface Props {
   settings: AppSettings
@@ -41,7 +40,6 @@ function fmtSize(mb: number): string {
 
 export function Settings({ settings, gpu, nvidiaGpu, onChange, onClose }: Props): React.ReactElement {
   const [engines, setEngines] = useState<EngineStatus | null>(null)
-  const [light, setLight] = useState(lightPlayback)
   const [requested, setRequested] = useState<Set<string>>(new Set())
   const [errors, setErrors] = useState<Record<string, string>>({})
 
@@ -221,33 +219,6 @@ export function Settings({ settings, gpu, nvidiaGpu, onChange, onClose }: Props)
               </div>
             )}
 
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                <p className="text-[13px] font-medium">Light playback</p>
-                <p className="text-[11.5px] text-white/40 leading-relaxed mt-0.5">
-                  Plays stems at a lower sample rate in mono, using about a quarter of the memory. Songs load
-                  far faster on a phone, at the cost of sound quality. This setting is per device.
-                </p>
-              </div>
-              <Toggle
-                on={light}
-                onClick={() => {
-                  setLightPlayback(!light)
-                  setLight(!light)
-                }}
-              />
-            </div>
-
-            <div className="flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                <p className="text-[13px] font-medium">Hide YouTube video</p>
-                <p className="text-[11.5px] text-white/40 leading-relaxed mt-0.5">
-                  Stems always play from your library. This stops streaming the video while you play and uses cached
-                  thumbnails instead.
-                </p>
-              </div>
-              <Toggle on={settings.hideVideo} onClick={() => onChange({ hideVideo: !settings.hideVideo })} />
-            </div>
           </section>
         </div>
       </div>

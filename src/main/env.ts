@@ -120,6 +120,10 @@ export function modelsDir(): string {
   return join(userDataDir(), 'models')
 }
 
+export function songsDir(): string {
+  return join(userDataDir(), 'songs')
+}
+
 const ENGINE_DEPS = ['beartype', 'rotary_embedding_torch', 'einops']
 let engineDepsReady = false
 

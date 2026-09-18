@@ -3,8 +3,9 @@ import { createPortal } from 'react-dom'
 import type { ChordData, ChordSegment } from '../../../shared/types'
 import { shapesFor } from '../lib/guitar'
 import { ChordDiagram } from './ChordDiagram'
+import { ZoomResetIcon } from './Icons'
 import { fmtTime } from '../lib/format'
-import { ROOTS, ZOOM_STEPS, chordText, hueOf, timelineFrame } from '../lib/timeline'
+import { ROOTS, ZOOM_STEPS, chordText, defaultZoom, hueOf, timelineFrame } from '../lib/timeline'
 
 interface Props {
   chords: ChordData
@@ -35,7 +36,10 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
   const viewportRef = useRef<HTMLDivElement>(null)
   const trackRef = useRef<HTMLDivElement>(null)
   const markerRef = useRef<HTMLSpanElement>(null)
-  const [zoom, setZoom] = useState(1)
+  const [zoom, setZoom] = useState(() => defaultZoom(duration > 0 ? duration : chords.duration || 0))
+  // a zoom the listener chose is theirs to keep, even when the song's length
+  // turns up late and moves the default
+  const zoomTouched = useRef(false)
   const [currentIndex, setCurrentIndex] = useState(-1)
   const [editing, setEditing] = useState<number | null>(null)
   const [hover, setHover] = useState<{ label: string; x: number; y: number } | null>(null)
@@ -84,6 +88,11 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
     }
   }, [editing])
 
+  useEffect(() => {
+    if (zoomTouched.current) return
+    setZoom(defaultZoom(span))
+  }, [span])
+
   // wheel zoom needs a non-passive listener to stop the page scrolling
   useEffect(() => {
     const viewport = viewportRef.current
@@ -91,6 +100,7 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
     const onWheel = (e: WheelEvent): void => {
       e.preventDefault()
       setEditing(null)
+      zoomTouched.current = true
       setZoom((z) => {
         const i = ZOOM_STEPS.indexOf(z)
         const next = e.deltaY < 0 ? i + 1 : i - 1
@@ -103,6 +113,7 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
 
   const stepZoom = (direction: number): void => {
     setEditing(null)
+    zoomTouched.current = true
     setZoom((z) => {
       const i = ZOOM_STEPS.indexOf(z)
       return ZOOM_STEPS[Math.max(0, Math.min(ZOOM_STEPS.length - 1, i + direction))]
@@ -132,11 +143,9 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
         <div className="flex items-center gap-2 md:gap-3 shrink-0 text-[11px] text-white/35 font-mono flex-wrap">
           {chords.tempo ? <span>{Math.round(chords.tempo)} BPM</span> : null}
           <span>{segments.filter((s) => shown(s) !== 'N').length} chords</span>
-          {current && shown(current) !== 'N' && (
-            <span className="text-[13px] font-sans font-semibold text-white tabular-nums">
-              {chordText(shown(current))}
-            </span>
-          )}
+          <span className="w-16 text-center text-[13px] font-sans font-semibold text-white tabular-nums">
+            {current && shown(current) !== 'N' ? chordText(shown(current)) : ''}
+          </span>
           <span className="flex items-center gap-1 ml-1">
             <button
               onClick={() => stepZoom(-1)}
@@ -157,18 +166,18 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
             >
               +
             </button>
-            {following && (
-              <button
-                onClick={() => {
-                  setEditing(null)
-                  setZoom(1)
-                }}
-                title="Back to the whole song"
-                className="no-drag px-2 h-6 rounded-md bg-white/5 hover:bg-white/10 text-white/60 hover:text-white transition-colors"
-              >
-                reset
-              </button>
-            )}
+            <button
+              onClick={() => {
+                setEditing(null)
+                zoomTouched.current = true
+                setZoom(1)
+              }}
+              disabled={!following}
+              title="Fit the whole song"
+              className="no-drag flex items-center justify-center w-6 h-6 rounded-md bg-white/5 hover:bg-white/10 text-white/60 hover:text-white disabled:opacity-30 transition-colors"
+            >
+              <ZoomResetIcon className="w-3.5 h-3.5" />
+            </button>
           </span>
         </div>
       </div>

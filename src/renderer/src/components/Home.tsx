@@ -1,18 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ModelStatus, SearchResult, Song, SplitOptions, StemId } from '../../../shared/types'
-import {
-  ENGINES,
-  INSTRUMENTS,
-  MODELS,
-  OPTIONS,
-  engineInfo,
-  estimateSeconds,
-  fmtEstimate,
-  modelsFor,
-  normalizeSplit,
-  optionBlurb,
-  type OptionId
-} from '../../../shared/engines'
+import { DEFAULT_SPLIT, engineInfo, ENGINES, estimateSeconds, fmtEstimate, INSTRUMENTS, MODELS, modelsFor, normalizeSplit, optionBlurb, OPTIONS, type OptionId } from '../../../shared/engines'
 import { parseVideoId } from '../../../shared/url'
 import { STEM_INFO } from '../lib/stems'
 import { fmtTime } from '../lib/format'
@@ -28,7 +16,9 @@ interface Props {
   onOpenSettings: () => void
 }
 
-const SPLIT_KEY = 'stemkit.split'
+// the suffix moves with the defaults: an older stored choice is dropped
+// rather than quietly keeping instruments and chords turned off
+const SPLIT_KEY = 'stemkit.split.v2'
 
 // pointer: fine means a mouse, where focusing the search box on arrival helps
 const AUTOFOCUS =
@@ -38,7 +28,11 @@ const AUTOFOCUS =
    they come back with it; normalizeSplit applies the rules when splitting */
 function loadSplit(): SplitOptions {
   try {
-    const saved = JSON.parse(localStorage.getItem(SPLIT_KEY) ?? 'null')
+    const stored = localStorage.getItem(SPLIT_KEY)
+    // nothing chosen yet: normalizeSplit validates, it does not fill in the
+    // optional extras, so the defaults have to come from the defaults
+    if (!stored) return { ...DEFAULT_SPLIT, stems: [...DEFAULT_SPLIT.stems] }
+    const saved = JSON.parse(stored)
     const split = normalizeSplit(saved)
     return {
       ...split,

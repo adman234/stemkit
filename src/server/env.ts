@@ -33,6 +33,12 @@ export interface EnvState {
 const IS_WIN = process.platform === 'win32'
 
 const DATA_DIR = resolve(process.env.STEMKIT_DATA ?? '/config')
+/* Stems are around 20 MB per stem per minute and the checkpoints come to a
+   couple of gigabytes, which is a lot to keep on the flash or SSD that
+   usually holds a container's config. Either can be pointed at its own
+   mount; left unset they sit under the data folder as before. */
+const SONGS_DIR = resolve(process.env.STEMKIT_SONGS ?? join(DATA_DIR, 'songs'))
+const MODELS_DIR = resolve(process.env.STEMKIT_MODELS ?? join(DATA_DIR, 'models'))
 // out/server/index.js lives two levels below the app root
 export const APP_DIR = resolve(process.env.STEMKIT_APP_DIR ?? join(__dirname, '..', '..'))
 
@@ -44,7 +50,7 @@ const FFMPEG = process.env.STEMKIT_FFMPEG ?? 'ffmpeg'
 // pull. PYTHONPATH puts it ahead of site-packages for every child process
 const PY_OVERRIDES = join(DATA_DIR, 'python-overrides')
 process.env.PYTHONPATH = [PY_OVERRIDES, process.env.PYTHONPATH].filter(Boolean).join(delimiter)
-process.env.TORCH_HOME = process.env.TORCH_HOME ?? join(DATA_DIR, 'models', 'torch')
+process.env.TORCH_HOME = process.env.TORCH_HOME ?? join(MODELS_DIR, 'torch')
 
 const state: EnvState = {
   python: { found: false },
@@ -85,7 +91,11 @@ export function chordsScript(): string {
 }
 
 export function modelsDir(): string {
-  return join(DATA_DIR, 'models')
+  return MODELS_DIR
+}
+
+export function songsDir(): string {
+  return SONGS_DIR
 }
 
 export function cookiesFile(): string {

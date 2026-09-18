@@ -2,7 +2,6 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { net, BrowserWindow } from 'electron'
 import { userDataDir } from './env'
-import { loadSettings } from './settings'
 
 // mqdefault (320x180) covers every thumbnail slot in the app; library
 // thumbnails come from this local cache instead of i.ytimg.com once the
@@ -61,7 +60,6 @@ export function getThumb(videoId: string): Promise<string | null> {
         return toDataUrl(readFileSync(file))
       } catch {}
     }
-    if (loadSettings().hideVideo) return null
     try {
       const res = await net.fetch(`${YT_THUMB_URL}${videoId}/mqdefault.jpg`, {
         signal: AbortSignal.timeout(10000)
@@ -80,7 +78,7 @@ export function getThumb(videoId: string): Promise<string | null> {
   return p
 }
 
-// hideVideo flipped: previously-returned nulls may now be servable and the
+// settings changed: a previously-returned null may now be servable and the
 // other way around, so drop every cached resolution
 export function clearThumbMemo(): void {
   memo.clear()

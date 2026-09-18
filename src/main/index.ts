@@ -218,7 +218,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('settings:get', () => loadSettings())
   ipcMain.handle('settings:set', (_e, patch: Partial<AppSettings>) => {
     const next = saveSettings(patch)
-    // hideVideo flips the thumbnail source, so cached lookups must retry
+    // a settings change can flip the thumbnail source, so cached lookups retry
     clearThumbMemo()
     return next
   })

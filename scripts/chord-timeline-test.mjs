@@ -17,7 +17,7 @@ await build({
   platform: 'neutral',
   logLevel: 'error'
 })
-const { timelineFrame } = await import(pathToFileURL(bundle).href)
+const { timelineFrame, defaultZoom, ZOOM_STEPS, DEFAULT_WINDOW_SECONDS } = await import(pathToFileURL(bundle).href)
 
 const SPAN = 240 // a 4 minute song
 const WIDTH = 1000 // pixels of visible strip
@@ -76,6 +76,25 @@ for (const zoom of [1, 2, 8, 32]) {
   const frame = timelineFrame(SPAN * 2, SPAN, 1, WIDTH)
   checks.push(['past the end, the playhead stops at 100 percent', near(frame.markerLeft, 100)])
 }
+
+// chords open on a window of about twenty seconds, whatever the song's length
+for (const [label, seconds] of [
+  ['a minute and a half', 95],
+  ['five and a half minutes', 349],
+  ['eighteen minutes', 1097]
+]) {
+  const zoom = defaultZoom(seconds)
+  const window = seconds / zoom
+  checks.push([
+    `${label} opens on ${window.toFixed(0)}s of music`,
+    ZOOM_STEPS.includes(zoom) && Math.abs(window - DEFAULT_WINDOW_SECONDS) <= DEFAULT_WINDOW_SECONDS / 2
+  ])
+}
+
+// a song shorter than the window, or one whose length is not known yet, just
+// shows itself whole
+checks.push(['a twenty second song is not zoomed', defaultZoom(20) === 1])
+checks.push(['an unknown length is not zoomed', defaultZoom(0) === 1])
 
 let ok = true
 for (const [label, pass] of checks) {

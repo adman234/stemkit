@@ -146,3 +146,13 @@ export function LogoMark({ className = 'w-7 h-7' }: IconProps) {
     </svg>
   )
 }
+
+export function ZoomResetIcon({ className = base }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="M7.5 10.5h6M20 20l-4.7-4.7" />
+      <path d="M3 3v3M3 3h3M21 3v3M21 3h-3" />
+    </svg>
+  )
+}

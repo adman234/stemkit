@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { join } from 'path'
-import { userDataDir } from './env'
+import { songsDir, userDataDir } from './env'
 import { DEFAULT_STEMS, type Song } from '../shared/types'
 
 function libraryFile(): string {
@@ -9,7 +9,7 @@ function libraryFile(): string {
 }
 
 function songsRoot(): string {
-  return join(userDataDir(), 'songs')
+  return songsDir()
 }
 
 export function songDir(videoId: string): string {

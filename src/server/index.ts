@@ -15,14 +15,16 @@ import {
   getStatus,
   gpuAccelerationInfo,
   hasGpuAcceleration,
+  modelsDir,
   nvidiaGpuInfo,
+  songsDir,
   updateYtDlp,
   userDataDir
 } from './env'
 import { attachClient } from './events'
 import { writeZip, zipSize, type ZipEntry } from './zip'
 // desktop main-process modules, reused as-is (see scripts/build-server.mjs)
-import { loadSettings, saveSettings } from '../main/settings'
+import { loadSettings, migrateSettings, saveSettings } from '../main/settings'
 import { loadSongs, mixWavPath, removeSong, stemsDir, stemsFor } from '../main/library'
 import {
   buildPreviews,
@@ -390,7 +392,7 @@ route('GET', '/api/settings', async () => loadSettings())
 route('PUT', '/api/settings', async (req) => {
   const patch = (await readJson(req)) as Partial<AppSettings>
   const next = saveSettings(patch)
-  // hideVideo flips the thumbnail source, so cached lookups must retry
+  // a settings change can flip the thumbnail source, so cached lookups retry
   clearThumbMemo()
   return next
 })
@@ -519,7 +521,11 @@ const server = createServer((req, res) => {
 
 async function startup(): Promise<void> {
   mkdirSync(userDataDir(), { recursive: true })
+  mkdirSync(songsDir(), { recursive: true })
+  mkdirSync(modelsDir(), { recursive: true })
   console.log(`[stemkit] ${appVersion()}, data in ${userDataDir()}`)
+  // an install from before the defaults changed is brought up to them once
+  migrateSettings()
 
   server.listen(PORT, HOST, () => {
     console.log(`[stemkit] web UI on http://${HOST}:${PORT}${PASSWORD ? ' (password protected)' : ''}`)

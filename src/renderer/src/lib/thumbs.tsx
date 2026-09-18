@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 
 // library thumbnails resolve through the local cache in the main process
-// (userData/thumbs). Setting changes re-resolve: hideVideo on/off changes
-// whether missing thumbs may still be fetched online
+// (userData/thumbs). A settings change re-resolves them, since it can change
+// whether a missing thumb may still be fetched online
 const memo = new Map<string, Promise<string | null>>()
 
 function getThumbCached(videoId: string): Promise<string | null> {

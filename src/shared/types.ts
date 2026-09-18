@@ -115,24 +115,26 @@ export interface AppSettings {
   // only rendered when an NVIDIA GPU is detected; enabling it downloads the
   // CUDA build of torch (~2.5GB) on first use
   gpuSplit: boolean
-  // hide the YouTube video while playing: stems are always played locally,
-  // this stops streaming the video and falls back to cached thumbnails
-  hideVideo: boolean
   // web version: also download the video with each split, so playback runs
   // from the server instead of streaming from YouTube
   downloadVideo: boolean
   // tallest video to download (360, 480 or 720)
   videoHeight: number
+  // which set of defaults this file was written against, so a change to them
+  // reaches an install that already has a settings file
+  rev?: number
 }
+
+export const SETTINGS_REV = 1
 
 export const DEFAULT_SETTINGS: AppSettings = {
   shifts: 1,
   htdemucsFt: false,
   roformerVocals: false,
-  gpuSplit: false,
-  hideVideo: false,
-  downloadVideo: false,
-  videoHeight: 480
+  gpuSplit: true,
+  downloadVideo: true,
+  videoHeight: 480,
+  rev: SETTINGS_REV
 }
 
 export const VIDEO_HEIGHTS = [360, 480, 720]

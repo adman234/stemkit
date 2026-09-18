@@ -3,7 +3,21 @@
 
 export const ROOTS = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
 
-export const ZOOM_STEPS = [1, 2, 4, 8, 16, 32]
+export const ZOOM_STEPS = [1, 2, 4, 8, 16, 32, 64]
+
+/* Chords open at roughly this much of the song on screen: close enough to
+   read the changes, wide enough to see the next few coming. A long song
+   needs a deeper zoom to get there, which is what the steps above allow. */
+export const DEFAULT_WINDOW_SECONDS = 20
+
+/* the step that puts the window nearest the target, so the opening view is
+   about the same stretch of music whatever the song's length */
+export function defaultZoom(span: number, target = DEFAULT_WINDOW_SECONDS): number {
+  if (!(span > 0)) return 1
+  return ZOOM_STEPS.reduce((best, step) =>
+    Math.abs(span / step - target) < Math.abs(span / best - target) ? step : best
+  )
+}
 
 export interface TimelineFrame {
   // pixels the strip is shifted by, negative as the song plays on
