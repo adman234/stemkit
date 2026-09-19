@@ -5,7 +5,16 @@ import { shapesFor } from '../lib/guitar'
 import { ChordDiagram } from './ChordDiagram'
 import { ZoomResetIcon } from './Icons'
 import { fmtTime } from '../lib/format'
-import { ROOTS, ZOOM_STEPS, chordText, defaultZoom, hueOf, timelineFrame } from '../lib/timeline'
+import {
+  ROOTS,
+  ZOOM_STEPS,
+  chordText,
+  defaultZoom,
+  dragSeek,
+  hueOf,
+  pickerState,
+  timelineFrame
+} from '../lib/timeline'
 
 interface Props {
   chords: ChordData
@@ -43,6 +52,13 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
   const [currentIndex, setCurrentIndex] = useState(-1)
   const [editing, setEditing] = useState<number | null>(null)
   const [hover, setHover] = useState<{ label: string; x: number; y: number } | null>(null)
+  // a drag in progress: where it started, and the position it started from
+  const dragRef = useRef<{ x: number; at: number; active: boolean } | null>(null)
+  const draggedRef = useRef(false)
+  const seekRef = useRef<{ to: number | null; raf: number }>({ to: null, raf: 0 })
+  // whether the chord being edited has been reached, so the picker is not
+  // closed by the seek that opened it
+  const reachedRef = useRef(false)
 
   const span = duration > 0 ? duration : chords.duration || 1
   const segments = chords.segments
@@ -89,6 +105,18 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
   }, [editing])
 
   useEffect(() => {
+    reachedRef.current = false
+  }, [editing])
+
+  // the picker goes when the music moves off the chord it was opened on
+  useEffect(() => {
+    if (editing === null) return
+    const next = pickerState(editing, currentIndex, reachedRef.current)
+    reachedRef.current = next.reached
+    if (!next.open) setEditing(null)
+  }, [currentIndex, editing])
+
+  useEffect(() => {
     if (zoomTouched.current) return
     setZoom(defaultZoom(span))
   }, [span])
@@ -110,6 +138,53 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
     viewport.addEventListener('wheel', onWheel, { passive: false })
     return () => viewport.removeEventListener('wheel', onWheel)
   }, [])
+
+  /* pointermove can fire several times a frame, and every seek restarts the
+     stems, so the last position of each frame is the one that counts */
+  const queueSeek = (to: number): void => {
+    seekRef.current.to = to
+    if (seekRef.current.raf) return
+    seekRef.current.raf = requestAnimationFrame(() => {
+      seekRef.current.raf = 0
+      if (seekRef.current.to !== null) onSeek(seekRef.current.to)
+      seekRef.current.to = null
+    })
+  }
+
+  useEffect(() => () => cancelAnimationFrame(seekRef.current.raf), [])
+
+  /* Dragging the strip pulls the music past the playhead, the way you would
+     push a tape along: it is the only way to scrub on a phone, where there
+     is no scroll wheel to zoom with and no room for a second scrub bar.
+     A tap is left alone so it still opens the picker. */
+  const onPointerDown = (e: React.PointerEvent): void => {
+    // a fresh touch is a tap until it travels, whatever the last one did
+    draggedRef.current = false
+    dragRef.current = { x: e.clientX, at: getPosition(), active: false }
+  }
+
+  const onPointerMove = (e: React.PointerEvent): void => {
+    const drag = dragRef.current
+    if (!drag || e.buttons !== 1) return
+    const dx = e.clientX - drag.x
+    if (!drag.active) {
+      if (Math.abs(dx) < 5) return
+      drag.active = true
+      draggedRef.current = true
+      setEditing(null)
+      setHover(null)
+      // from here it is a drag, not a tap, so follow the pointer even when it
+      // leaves the strip. A pointer that has already been released throws
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId)
+      } catch {}
+    }
+    queueSeek(dragSeek(drag.at, dx, span, zoom, viewportRef.current?.clientWidth || 1))
+  }
+
+  const endDrag = (): void => {
+    dragRef.current = null
+  }
 
   const stepZoom = (direction: number): void => {
     setEditing(null)
@@ -182,7 +257,16 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
         </div>
       </div>
 
-      <div ref={viewportRef} className="relative h-11 rounded-lg overflow-hidden bg-white/[0.03]">
+      <div
+        ref={viewportRef}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+        // vertical swipes still scroll the page; sideways ones are ours
+        style={{ touchAction: 'pan-y' }}
+        className="relative h-11 rounded-lg overflow-hidden bg-white/[0.03] cursor-grab active:cursor-grabbing"
+      >
         <div
           ref={trackRef}
           className="absolute top-0 bottom-0 left-0 will-change-transform"
@@ -197,10 +281,12 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
               <button
                 key={`${seg.start}-${i}`}
                 onClick={(e) => {
+                  e.stopPropagation()
+                  // the pointer was scrubbing, not picking a chord
+                  if (draggedRef.current) return
                   onSeek(seg.start)
                   setEditing(i)
                   setHover(null)
-                  e.stopPropagation()
                 }}
                 onMouseEnter={(e) =>
                   setHover({ label, x: e.clientX, y: e.currentTarget.getBoundingClientRect().top })

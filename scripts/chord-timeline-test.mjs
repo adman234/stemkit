@@ -17,7 +17,8 @@ await build({
   platform: 'neutral',
   logLevel: 'error'
 })
-const { timelineFrame, defaultZoom, ZOOM_STEPS, DEFAULT_WINDOW_SECONDS } = await import(pathToFileURL(bundle).href)
+const { timelineFrame, defaultZoom, dragSeek, pickerState, ZOOM_STEPS, DEFAULT_WINDOW_SECONDS } =
+  await import(pathToFileURL(bundle).href)
 
 const SPAN = 240 // a 4 minute song
 const WIDTH = 1000 // pixels of visible strip
@@ -95,6 +96,44 @@ for (const [label, seconds] of [
 // shows itself whole
 checks.push(['a twenty second song is not zoomed', defaultZoom(20) === 1])
 checks.push(['an unknown length is not zoomed', defaultZoom(0) === 1])
+
+// dragging the strip pulls the music past the playhead
+{
+  const middle = SPAN / 2
+  checks.push([
+    'dragging right goes back in time',
+    dragSeek(middle, 100, SPAN, 1, WIDTH) < middle && dragSeek(middle, -100, SPAN, 1, WIDTH) > middle
+  ])
+  checks.push([
+    'zoomed out, a full width drag covers the whole song',
+    near(dragSeek(SPAN, WIDTH, SPAN, 1, WIDTH), 0, 0.001)
+  ])
+  checks.push([
+    'zoomed in four times, the same drag covers a quarter of it',
+    near(dragSeek(SPAN, WIDTH, SPAN, 4, WIDTH), SPAN * 0.75, 0.001)
+  ])
+  checks.push([
+    'a drag cannot run off either end',
+    dragSeek(1, WIDTH * 5, SPAN, 1, WIDTH) === 0 && dragSeek(SPAN - 1, -WIDTH * 5, SPAN, 1, WIDTH) === SPAN
+  ])
+  checks.push(['a song with no length does not move', dragSeek(0, 250, 0, 1, WIDTH) === 0])
+}
+
+// the chord picker lives as long as the chord it was opened on
+{
+  // opening one seeks to its chord, so the playhead is still elsewhere
+  const opened = pickerState(5, 2, false)
+  checks.push(['the seek that opens a picker does not close it', opened.open && !opened.reached])
+
+  const playing = pickerState(5, 5, false)
+  checks.push(['it stays while its own chord plays', playing.open && playing.reached])
+
+  checks.push(['it goes when that chord ends', pickerState(5, 6, true).open === false])
+  checks.push(['and when the music runs into a gap', pickerState(5, -1, true).open === false])
+
+  // a chord picked ahead of the playhead waits for the music to reach it
+  checks.push(['a chord not reached yet keeps its picker', pickerState(5, 6, false).open === true])
+}
 
 let ok = true
 for (const [label, pass] of checks) {

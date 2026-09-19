@@ -19,6 +19,34 @@ export function defaultZoom(span: number, target = DEFAULT_WINDOW_SECONDS): numb
   )
 }
 
+/* Where a drag lands. The strip is dragged rather than the playhead, so the
+   music follows the hand: pulling right brings earlier music into view. One
+   screen width is one screenful of music, whatever the zoom. */
+export function dragSeek(
+  startPosition: number,
+  dx: number,
+  span: number,
+  zoom: number,
+  viewportWidth: number
+): number {
+  if (!(span > 0) || !(viewportWidth > 0)) return startPosition
+  const moved = (dx * span) / (viewportWidth * zoom)
+  return Math.max(0, Math.min(span, startPosition - moved))
+}
+
+/* A picker opened on a chord belongs to that chord, so it is put away once
+   the music has played through it. Opening one seeks to its chord, and the
+   playhead takes a frame to arrive, so it has to get there before leaving
+   counts for anything: otherwise the seek that opened the picker closes it. */
+export function pickerState(
+  editing: number,
+  currentIndex: number,
+  reached: boolean
+): { open: boolean; reached: boolean } {
+  if (currentIndex === editing) return { open: true, reached: true }
+  return { open: !reached, reached }
+}
+
 export interface TimelineFrame {
   // pixels the strip is shifted by, negative as the song plays on
   translateX: number
