@@ -47,20 +47,36 @@ export { searchYouTube } from '../main/pipeline'
 
 /* Stems are 32-bit float WAV, around 20 MB per minute each. That is the
    right thing to export, but a phone pulling six of them over wifi waits
-   minutes, so playback uses an AAC copy at about a twentieth of the size.
-   The WAVs stay untouched and are what downloads still hand over. */
-export function previewPath(videoId: string, stem: string): string {
-  return join(songDir(videoId), 'preview', `${stem}.m4a`)
+   minutes, so playback uses a compressed copy at about a twentieth of the
+   size. The WAVs stay untouched and are what downloads still hand over.
+
+   Two formats, because decoding one of them is not something every browser
+   can promise: AAC leans on a decoder from the operating system, while Opus
+   is carried by the browser itself wherever it runs. The client asks for
+   whichever its own browser is surest about. */
+export type PreviewFormat = 'm4a' | 'webm'
+
+const PREVIEW_ARGS: Record<PreviewFormat, string[]> = {
+  m4a: ['-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart'],
+  webm: ['-c:a', 'libopus', '-b:a', '128k']
+}
+
+export function previewPath(videoId: string, stem: string, format: PreviewFormat = 'm4a'): string {
+  return join(songDir(videoId), 'preview', `${stem}.${format}`)
 }
 
 const previewJobs = new Map<string, Promise<boolean>>()
 
-export function ensurePreview(videoId: string, stem: string): Promise<boolean> {
-  const out = previewPath(videoId, stem)
+export function ensurePreview(
+  videoId: string,
+  stem: string,
+  format: PreviewFormat = 'm4a'
+): Promise<boolean> {
+  const out = previewPath(videoId, stem, format)
   if (existsSync(out)) return Promise.resolve(true)
   const source = join(stemsDir(videoId), `${stem}.wav`)
   if (!existsSync(source)) return Promise.resolve(false)
-  const key = `${videoId}/${stem}`
+  const key = `${videoId}/${stem}.${format}`
   const started = Date.now()
   let job = previewJobs.get(key)
   if (!job) {
@@ -72,19 +88,8 @@ export function ensurePreview(videoId: string, stem: string): Promise<boolean> {
         return resolve(false)
       }
       mkdirSync(dirname(out), { recursive: true })
-      const partial = `${out}.part.m4a`
-      const child = spawn(ffmpeg, [
-        '-y',
-        '-i',
-        source,
-        '-c:a',
-        'aac',
-        '-b:a',
-        '160k',
-        '-movflags',
-        '+faststart',
-        partial
-      ])
+      const partial = `${out}.part.${format}`
+      const child = spawn(ffmpeg, ['-y', '-i', source, ...PREVIEW_ARGS[format], partial])
       let stderr = ''
       child.stderr?.on('data', (chunk: Buffer) => {
         stderr = (stderr + chunk.toString()).slice(-400)
@@ -106,7 +111,7 @@ export function ensurePreview(videoId: string, stem: string): Promise<boolean> {
     })
       .then((ok) => {
         console.log(
-          `[preview] ${videoId}/${stem}: ${
+          `[preview] ${videoId}/${stem}.${format}: ${
             ok ? `ready in ${Math.round((Date.now() - started) / 100) / 10}s` : `failed, ${why || 'unknown'}`
           }`
         )
@@ -121,10 +126,14 @@ export function ensurePreview(videoId: string, stem: string): Promise<boolean> {
 }
 
 /* made in the background once a split finishes, so the first play is quick */
-export async function buildPreviews(videoId: string, stems: string[]): Promise<void> {
+export async function buildPreviews(
+  videoId: string,
+  stems: string[],
+  format: PreviewFormat = 'm4a'
+): Promise<void> {
   for (const stem of stems) {
     if (!existsSync(songDir(videoId))) return
-    await ensurePreview(videoId, stem)
+    await ensurePreview(videoId, stem, format)
   }
 }
 

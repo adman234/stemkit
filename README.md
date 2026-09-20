@@ -34,6 +34,7 @@ wget -O /boot/config/plugins/dockerMan/templates-user/my-stemkit.xml https://raw
 | `STEMKIT_USERNAME` | empty | Username for basic auth. Empty accepts any username |
 | `YTDLP_AUTO_UPDATE` | `true` | Installs the newest yt-dlp into `/config/python-overrides` at start |
 | `STEMKIT_ATTENTION` | `efficient` | CUDA attention kernel for the studio vocals model: `efficient`, `flash` or `math` |
+| `STEMKIT_KEEP_DAYS` | unset | Removes songs that have not been played for this many days. Empty or `0` keeps them for ever |
 | `PUID` / `PGID` / `UMASK` | `99` / `100` / `022` | Owner and mask for files written to `/config` |
 | `PORT` | `8080` | Port the server listens on inside the container |
 

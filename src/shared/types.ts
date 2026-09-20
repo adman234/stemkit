@@ -89,6 +89,9 @@ export interface Song {
   video?: boolean
   // web version: key and chords have been worked out for this song
   chords?: boolean
+  // web version: when the stems were last loaded for playing, which is what
+  // STEMKIT_KEEP_DAYS measures a song's age from
+  lastPlayedAt?: number
 }
 
 // web version: progress of a video download
@@ -125,7 +128,7 @@ export interface AppSettings {
   rev?: number
 }
 
-export const SETTINGS_REV = 1
+export const SETTINGS_REV = 2
 
 export const DEFAULT_SETTINGS: AppSettings = {
   shifts: 1,
@@ -133,7 +136,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   roformerVocals: false,
   gpuSplit: true,
   downloadVideo: true,
-  videoHeight: 480,
+  videoHeight: 720,
   rev: SETTINGS_REV
 }
 
@@ -213,12 +216,15 @@ export interface StemKitApi {
   listSongs(): Promise<Song[]>
   deleteSong(videoId: string): Promise<void>
   getBuffers(videoId: string): Promise<Record<string, Uint8Array>>
+  // web version: the playback formats this browser can decode, best first
+  stemFormats?(): string[]
   // web version: one stem at a time, so a phone never holds the whole song
   // in memory twice over. compressed is false when it fell back to the WAV
   getStemBuffer?(
     videoId: string,
-    stem: string
-  ): Promise<{ bytes: Uint8Array; compressed: boolean; type?: string }>
+    stem: string,
+    format?: string
+  ): Promise<{ bytes: Uint8Array; compressed: boolean; type?: string; format?: string }>
   exportStem(videoId: string, stem: string): Promise<{ saved: boolean; path?: string }>
   exportAllStems(videoId: string): Promise<{ saved: boolean; path?: string; count?: number }>
   searchYouTube(query: string): Promise<SearchResult[]>

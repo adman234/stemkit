@@ -21,6 +21,14 @@ export function loadSettings(): AppSettings {
    for ever, since every key is stored explicitly. This moves such a file up
    to the current defaults once, and records that it has been done so a
    setting turned off afterwards stays off. */
+/* What each rev changed, applied only to a file written before it: a
+   setting turned off after that rev is left alone rather than switched back
+   on by a later migration. */
+const MIGRATIONS: { rev: number; patch: Partial<AppSettings> }[] = [
+  { rev: 1, patch: { gpuSplit: true, downloadVideo: true } },
+  { rev: 2, patch: { videoHeight: 720 } }
+]
+
 export function migrateSettings(): AppSettings {
   let stored: unknown = null
   try {
@@ -33,7 +41,8 @@ export function migrateSettings(): AppSettings {
   // defaults and make every file look up to date
   const rev = stored && typeof stored === 'object' ? Number((stored as { rev?: unknown }).rev ?? 0) : 0
   if (rev >= SETTINGS_REV) return loadSettings()
-  return saveSettings({ gpuSplit: true, downloadVideo: true })
+  const patch = MIGRATIONS.filter((m) => m.rev > rev).reduce((all, m) => ({ ...all, ...m.patch }), {})
+  return saveSettings(patch)
 }
 
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {

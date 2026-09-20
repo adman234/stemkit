@@ -29,9 +29,15 @@ async function loadBuffers(song: Song, onProgress: Progress): Promise<BufferCach
     // the desktop app hands over every stem in one go
     return decodePayload(await window.stemkit.getBuffers(song.videoId), onProgress)
   }
+  /* What a browser says it can decode and what it manages are not always the
+     same thing, so each format is tried in turn and the first one that
+     actually produces audio wins. The last of them is the WAV, which the app
+     decodes itself and so cannot be refused. */
+  const formats = window.stemkit.stemFormats?.() ?? ['wav']
   const out: BufferCacheMap = {}
   const failed: string[] = []
   let bytes = 0
+  let used = ''
   const started = performance.now()
   for (let i = 0; i < stems.length; i++) {
     // the first stem can wait on the server making its playback copy, which
@@ -39,25 +45,34 @@ async function loadBuffers(song: Song, onProgress: Progress): Promise<BufferCach
     const slow = setTimeout(() => {
       onProgress(i, stems.length, 'the server is preparing this song for playback')
     }, 3000)
-    let loadedStem
+    const tried: string[] = []
     try {
-      loadedStem = await fetchStem(song.videoId, stems[i])
+      for (const format of formats) {
+        let loadedStem
+        // decoding detaches the bytes, so their size is counted first
+        let size = 0
+        try {
+          loadedStem = await fetchStem(song.videoId, stems[i], format)
+          size = loadedStem.bytes.byteLength
+          out[stems[i] as StemId] = await decodeStem(loadedStem.bytes.buffer as ArrayBuffer)
+        } catch (err) {
+          const why = err instanceof Error ? err.message : String(err)
+          tried.push(`${format}: ${why}`)
+          if (loadedStem) console.warn(`[stemkit] ${stems[i]} would not decode as ${format} (${why})`)
+          continue
+        }
+        bytes += size
+        used = format
+        break
+      }
     } finally {
       clearTimeout(slow)
     }
-    bytes += loadedStem.bytes.byteLength
-    const source = `${loadedStem.compressed ? 'm4a' : 'wav'}, ${(
-      loadedStem.bytes.byteLength / 1048576
-    ).toFixed(1)} MB`
-    try {
-      out[stems[i] as StemId] = await decodeStem(loadedStem.bytes.buffer as ArrayBuffer)
-    } catch (err) {
-      // a stem that will not decode is worth naming; the rest still play
-      failed.push(`${stems[i]} (${source}): ${err instanceof Error ? err.message : String(err)}`)
-    }
+    // a stem no format could play is worth naming; the rest still play
+    if (!out[stems[i] as StemId]) failed.push(`${stems[i]} (${tried.join(', ')})`)
     const seconds = (performance.now() - started) / 1000
-    const summary = `${(bytes / 1048576).toFixed(0)} MB in ${seconds.toFixed(0)}s${
-      loadedStem.compressed ? '' : ' · full quality audio, which is slower to load'
+    const summary = `${(bytes / 1048576).toFixed(0)} MB in ${seconds.toFixed(0)}s · ${used || 'nothing'}${
+      used === 'wav' ? ' · full quality audio, which is slower to load' : ''
     }`
     onProgress(i + 1, stems.length, failed.length ? `${summary} · ${failed.length} failed` : summary)
   }

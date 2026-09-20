@@ -50,6 +50,19 @@ export function upsertSong(song: Song): Song[] {
   return songs
 }
 
+/* Loading a song's stems is the only signal the server gets that anyone is
+   listening, so that is what counts as playing it. Written at most once
+   every few minutes: loading a song asks for every stem at once. */
+export function touchSong(videoId: string): void {
+  const songs = loadSongs()
+  const song = songs.find((s) => s.videoId === videoId)
+  if (!song) return
+  const now = Date.now()
+  if (song.lastPlayedAt && now - song.lastPlayedAt < 5 * 60 * 1000) return
+  song.lastPlayedAt = now
+  saveSongs(songs)
+}
+
 export function removeSong(videoId: string): Song[] {
   const songs = loadSongs().filter((s) => s.videoId !== videoId)
   saveSongs(songs)

@@ -25,10 +25,11 @@ import { attachClient } from './events'
 import { writeZip, zipSize, type ZipEntry } from './zip'
 // desktop main-process modules, reused as-is (see scripts/build-server.mjs)
 import { loadSettings, migrateSettings, saveSettings } from '../main/settings'
-import { loadSongs, mixWavPath, removeSong, stemsDir, stemsFor } from '../main/library'
+import { loadSongs, mixWavPath, removeSong, stemsDir, stemsFor, touchSong } from '../main/library'
 import {
   buildPreviews,
   cancelJob,
+  type PreviewFormat,
   chordsPath,
   detectChords,
   ensurePreview,
@@ -290,19 +291,41 @@ route('GET', '/api/songs/:videoId/stems', async (_req, _res, params) => {
   return stemsFor(loadSongs().find((s) => s.videoId === videoId))
 })
 
-/* the compressed copy the player listens to, made on the spot for songs that
-   were split before playback copies existed */
-route('GET', '/api/songs/:videoId/stems/:stem.m4a', async (req, res, params) => {
+/* the compressed copies the player listens to, made on the spot for songs
+   split before playback copies existed, or in a format not asked for before */
+const PREVIEW_TYPES: Record<PreviewFormat, string> = {
+  m4a: 'audio/mp4',
+  webm: 'audio/webm'
+}
+
+async function servePreview(
+  req: IncomingMessage,
+  res: ServerResponse,
+  params: Record<string, string>,
+  format: PreviewFormat
+): Promise<null> {
   const videoId = videoIdParam(params)
   const stem = params.stem
   if (!STEM_NAME.test(stem)) throw new HttpError(400, 'Invalid stem name')
-  if (!(await ensurePreview(videoId, stem))) throw new HttpError(404, `No playback copy for ${stem}`)
+  if (!(await ensurePreview(videoId, stem, format))) {
+    throw new HttpError(404, `No ${format} playback copy for ${stem}`)
+  }
+  touchSong(videoId)
   // get the rest ready while this one plays, so the wait happens once
   const song = loadSongs().find((s) => s.videoId === videoId)
   const rest = (song?.stems ?? []).filter((name) => name !== stem)
-  if (rest.length) void buildPreviews(videoId, rest)
-  sendFile(req, res, previewPath(videoId, stem), 'audio/mp4')
-})
+  if (rest.length) void buildPreviews(videoId, rest, format)
+  sendFile(req, res, previewPath(videoId, stem, format), PREVIEW_TYPES[format])
+  return null
+}
+
+route('GET', '/api/songs/:videoId/stems/:stem.m4a', (req, res, params) =>
+  servePreview(req, res, params, 'm4a')
+)
+
+route('GET', '/api/songs/:videoId/stems/:stem.webm', (req, res, params) =>
+  servePreview(req, res, params, 'webm')
+)
 
 route('GET', '/api/songs/:videoId/stems/:stem', async (req, res, params, url) => {
   const videoId = videoIdParam(params)
@@ -311,9 +334,10 @@ route('GET', '/api/songs/:videoId/stems/:stem', async (req, res, params, url) =>
   const file = join(stemsDir(videoId), `${stem}.wav`)
   if (!existsSync(file)) throw new HttpError(404, `Missing stem ${stem}`)
   if (!url.searchParams.has('download')) {
-    // playback should be using the compressed copy; if it is not, the reason
+    // playback should be using a compressed copy; if it is not, the reason
     // is in the [preview] line above this one
     console.log(`[stem] ${videoId}/${stem}: serving the full WAV for playback`)
+    touchSong(videoId)
   }
   const st = statSync(file)
   const etag = `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`
@@ -519,6 +543,29 @@ const server = createServer((req, res) => {
   sendJson(res, 404, { error: 'Not found' })
 })
 
+/* STEMKIT_KEEP_DAYS: stems are big, and a library nobody prunes fills the
+   disk on its own. Blank or zero keeps every song for ever, which is the
+   default: forgetting is opt-in. */
+function keepDays(): number {
+  const days = Number(process.env.STEMKIT_KEEP_DAYS ?? '')
+  return Number.isFinite(days) && days > 0 ? days : 0
+}
+
+function pruneSongs(): void {
+  const days = keepDays()
+  if (!days) return
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000
+  for (const song of loadSongs()) {
+    // a song nobody has played yet is judged by when it was added
+    const last = song.lastPlayedAt ?? song.addedAt
+    if (last >= cutoff) continue
+    removeSong(song.videoId)
+    console.log(
+      `[keep] removed ${song.videoId} (${song.title}), last played ${new Date(last).toISOString().slice(0, 10)}`
+    )
+  }
+}
+
 async function startup(): Promise<void> {
   mkdirSync(userDataDir(), { recursive: true })
   mkdirSync(songsDir(), { recursive: true })
@@ -526,6 +573,13 @@ async function startup(): Promise<void> {
   console.log(`[stemkit] ${appVersion()}, data in ${userDataDir()}`)
   // an install from before the defaults changed is brought up to them once
   migrateSettings()
+
+  if (keepDays()) {
+    console.log(`[keep] songs are removed when they have not been played for ${keepDays()} days`)
+    pruneSongs()
+    // a long-running container needs to be told again now and then
+    setInterval(pruneSongs, 6 * 60 * 60 * 1000).unref()
+  }
 
   server.listen(PORT, HOST, () => {
     console.log(`[stemkit] web UI on http://${HOST}:${PORT}${PASSWORD ? ' (password protected)' : ''}`)

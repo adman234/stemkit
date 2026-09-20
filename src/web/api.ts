@@ -12,6 +12,7 @@ import type {
   UpdateEvent,
   VideoEvent
 } from '../shared/types'
+import { playbackFormats } from '../shared/playback'
 
 /* Browser implementation of the window.stemkit bridge. The desktop preload
    forwards these calls to the Electron main process over IPC; here they go
@@ -100,25 +101,24 @@ const api: StemKitApi = {
     )
     return out
   },
-  getStemBuffer: async (videoId, stem) => {
+  stemFormats: () => {
+    const probe = document.createElement('audio')
+    return playbackFormats(navigator.userAgent, (type) => probe.canPlayType(type) !== '')
+  },
+
+  getStemBuffer: async (videoId, stem, format = 'm4a') => {
     const id = encodeURIComponent(videoId)
     const name = encodeURIComponent(stem)
-    // the AAC copy is a twentieth of the size of the float WAV, which is the
-    // fallback for an older server, or one whose ffmpeg could not make it
-    const small = await fetch(`/api/songs/${id}/stems/${name}.m4a`)
-    const smallType = small.headers.get('content-type') ?? ''
-    if (small.ok && smallType.startsWith('audio/')) {
-      return { bytes: new Uint8Array(await small.arrayBuffer()), compressed: true, type: smallType }
+    const res = await fetch(`/api/songs/${id}/stems/${name}.${format}`)
+    const type = res.headers.get('content-type') ?? ''
+    if (!res.ok || !type.startsWith('audio/')) {
+      throw new Error(`no ${format} copy (HTTP ${res.status} ${type || 'no type'})`)
     }
-    console.warn(
-      `[stemkit] no playback copy for ${stem} (HTTP ${small.status} ${smallType || 'no type'}), using the full WAV`
-    )
-    const full = await fetch(`/api/songs/${id}/stems/${name}.wav`)
-    if (!full.ok) throw new Error(`Could not load the ${stem} stem (HTTP ${full.status})`)
     return {
-      bytes: new Uint8Array(await full.arrayBuffer()),
-      compressed: false,
-      type: full.headers.get('content-type') ?? ''
+      bytes: new Uint8Array(await res.arrayBuffer()),
+      compressed: format !== 'wav',
+      type,
+      format
     }
   },
   exportStem: async (videoId, stem) => {
