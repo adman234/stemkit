@@ -329,6 +329,23 @@ export function Player({ song, settings }: Props): React.ReactElement {
     }
   }, [decoding, decodeError])
 
+  /* A phone that switches to another app should stop, not carry on playing
+     into whatever comes next. A desktop tab in the background is a different
+     thing: people leave music running there on purpose. */
+  useEffect(() => {
+    if (settings?.pauseWhenHidden === false) return
+    if (!window.matchMedia('(pointer: coarse)').matches) return
+    const onHidden = (): void => {
+      if (document.visibilityState !== 'hidden' || !playingRef.current) return
+      playingRef.current = false
+      engine.setPlaying(false, posRef.current)
+      hostRef.current?.pause()
+      setPlaying(false)
+    }
+    document.addEventListener('visibilitychange', onHidden)
+    return () => document.removeEventListener('visibilitychange', onHidden)
+  }, [settings?.pauseWhenHidden])
+
   const seekTo = useCallback(
     (t: number): void => {
       const clamped = Math.max(0, Math.min(duration > 0 ? duration - 0.05 : t, t))

@@ -123,6 +123,8 @@ export interface AppSettings {
   downloadVideo: boolean
   // tallest video to download (360, 480 or 720)
   videoHeight: number
+  // on a touch device, stop playing when the app goes to the background
+  pauseWhenHidden: boolean
   // which set of defaults this file was written against, so a change to them
   // reaches an install that already has a settings file
   rev?: number
@@ -137,6 +139,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   gpuSplit: true,
   downloadVideo: true,
   videoHeight: 720,
+  pauseWhenHidden: true,
   rev: SETTINGS_REV
 }
 

@@ -185,6 +185,20 @@ export function Settings({ settings, gpu, nvidiaGpu, onChange, onClose }: Props)
             <SectionHeader label="Playback" />
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
+                <p className="text-[13px] font-medium">Pause when you switch away</p>
+                <p className="text-[11.5px] text-white/40 leading-relaxed mt-0.5">
+                  On a phone or tablet, playing stops when you leave for another app, instead of carrying on out
+                  of sight. Desktop browsers are left alone.
+                </p>
+              </div>
+              <Toggle
+                on={settings.pauseWhenHidden}
+                onClick={() => onChange({ pauseWhenHidden: !settings.pauseWhenHidden })}
+              />
+            </div>
+
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
                 <p className="text-[13px] font-medium">Download the video</p>
                 <p className="text-[11.5px] text-white/40 leading-relaxed mt-0.5">
                   Saves the video with each split and plays it from the server, so the picture stays with the

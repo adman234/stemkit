@@ -56,6 +56,7 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
     videoHeight: VIDEO_HEIGHTS.includes(Number(merged.videoHeight))
       ? Number(merged.videoHeight)
       : DEFAULT_SETTINGS.videoHeight,
+    pauseWhenHidden: merged.pauseWhenHidden !== false,
     rev: SETTINGS_REV
   }
   writeFileSync(settingsFile(), JSON.stringify(next, null, 2))

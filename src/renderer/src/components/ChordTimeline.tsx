@@ -165,10 +165,12 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
 
   const onPointerMove = (e: React.PointerEvent): void => {
     const drag = dragRef.current
-    if (!drag || e.buttons !== 1) return
+    if (!drag) return
+    // a touch reports no buttons on some engines; a mouse must be held
+    if (e.pointerType === 'mouse' && e.buttons !== 1) return
     const dx = e.clientX - drag.x
     if (!drag.active) {
-      if (Math.abs(dx) < 5) return
+      if (Math.abs(dx) < (e.pointerType === 'mouse' ? 5 : 3)) return
       drag.active = true
       draggedRef.current = true
       setEditing(null)
@@ -263,8 +265,10 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
         onPointerMove={onPointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
-        // vertical swipes still scroll the page; sideways ones are ours
-        style={{ touchAction: 'pan-y' }}
+        /* the strip owns the gesture: sharing it with the page meant a drag
+           that started a few degrees off horizontal scrolled the page away
+           instead of scrubbing */
+        style={{ touchAction: 'none' }}
         className="relative h-11 rounded-lg overflow-hidden bg-white/[0.03] cursor-grab active:cursor-grabbing"
       >
         <div

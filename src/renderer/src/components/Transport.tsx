@@ -37,6 +37,9 @@ function SeekBar({
 }): React.ReactElement {
   const barRef = useRef<HTMLDivElement>(null)
   const [, force] = useState(0)
+  // the pointer doing the dragging, so a second finger cannot hijack it
+  const dragId = useRef<number | null>(null)
+  const [dragging, setDragging] = useState(false)
 
   useEffect(() => {
     if (!playing) return
@@ -66,23 +69,45 @@ function SeekBar({
       <div
         ref={barRef}
         onPointerDown={(e) => {
-          e.currentTarget.setPointerCapture(e.pointerId)
+          if (dragId.current !== null) return
+          dragId.current = e.pointerId
+          setDragging(true)
+          // the marker comes to the finger, wherever on the bar it landed
+          try {
+            e.currentTarget.setPointerCapture(e.pointerId)
+          } catch {}
           seekFromEvent(e.clientX)
         }}
         onPointerMove={(e) => {
-          if (e.buttons === 1) seekFromEvent(e.clientX)
+          if (dragId.current !== e.pointerId) return
+          // a touch reports no buttons on some engines; a mouse must be held
+          if (e.pointerType === 'mouse' && e.buttons !== 1) return
+          seekFromEvent(e.clientX)
         }}
-        className="no-drag relative flex-1 h-4 flex items-center cursor-pointer group"
+        onPointerUp={(e) => {
+          if (dragId.current !== e.pointerId) return
+          dragId.current = null
+          setDragging(false)
+        }}
+        onPointerCancel={() => {
+          dragId.current = null
+          setDragging(false)
+        }}
+        // the bar owns sideways gestures, or the page scrolls away mid-drag
+        style={{ touchAction: 'none' }}
+        className="no-drag relative flex-1 h-7 md:h-4 flex items-center cursor-pointer group touch-none"
       >
-        <div className="w-full h-1 rounded-full bg-white/10 overflow-hidden">
+        <div className="w-full h-1.5 md:h-1 rounded-full bg-white/10 overflow-hidden">
           <div
             className="h-full rounded-full bg-gradient-to-r from-violet-400 to-emerald-400"
             style={{ width: `${frac * 100}%` }}
           />
         </div>
         <div
-          className="absolute w-3 h-3 rounded-full bg-white shadow transition-transform group-hover:scale-125"
-          style={{ left: `calc(${frac * 100}% - 6px)` }}
+          className={`absolute w-4 h-4 md:w-3 md:h-3 rounded-full bg-white shadow transition-transform group-hover:scale-125 ${
+            dragging ? 'scale-150' : ''
+          }`}
+          style={{ left: `calc(${frac * 100}% - 8px)` }}
         />
       </div>
       <span className="text-xs text-white/50 font-mono tabular-nums w-12">
