@@ -55,6 +55,18 @@ def fail(message):
     sys.exit(1)
 
 
+def crash_message(e):
+    """top-level crash handler text: unreadable stderr tails (a bare python
+    traceback or an unrelated warnings.warn line) become actionable errors"""
+    msg = f"{e}"
+    if "no kernel image" in msg.lower():
+        return (
+            "GPU engine incompatible with this GPU (compute capability not supported by the "
+            "installed engine) - update StemKit or turn off GPU acceleration in Settings"
+        )
+    return msg[:400] or e.__class__.__name__
+
+
 def load_wav(path):
     # stems are float WAVs, which the stdlib wave module cannot read
     from wavio import read_wav
@@ -312,4 +324,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        fail(crash_message(e))

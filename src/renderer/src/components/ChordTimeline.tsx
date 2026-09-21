@@ -5,6 +5,7 @@ import { shapesFor } from '../lib/guitar'
 import { ChordDiagram } from './ChordDiagram'
 import { ZoomResetIcon } from './Icons'
 import { fmtTime } from '../lib/format'
+import { useFrameSeek } from '../lib/seek'
 import {
   ROOTS,
   ZOOM_STEPS,
@@ -52,10 +53,10 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
   const [currentIndex, setCurrentIndex] = useState(-1)
   const [editing, setEditing] = useState<number | null>(null)
   const [hover, setHover] = useState<{ label: string; x: number; y: number } | null>(null)
+  const queueSeek = useFrameSeek(onSeek)
   // a drag in progress: where it started, and the position it started from
   const dragRef = useRef<{ x: number; at: number; active: boolean } | null>(null)
   const draggedRef = useRef(false)
-  const seekRef = useRef<{ to: number | null; raf: number }>({ to: null, raf: 0 })
   // whether the chord being edited has been reached, so the picker is not
   // closed by the seek that opened it
   const reachedRef = useRef(false)
@@ -138,20 +139,6 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
     viewport.addEventListener('wheel', onWheel, { passive: false })
     return () => viewport.removeEventListener('wheel', onWheel)
   }, [])
-
-  /* pointermove can fire several times a frame, and every seek restarts the
-     stems, so the last position of each frame is the one that counts */
-  const queueSeek = (to: number): void => {
-    seekRef.current.to = to
-    if (seekRef.current.raf) return
-    seekRef.current.raf = requestAnimationFrame(() => {
-      seekRef.current.raf = 0
-      if (seekRef.current.to !== null) onSeek(seekRef.current.to)
-      seekRef.current.to = null
-    })
-  }
-
-  useEffect(() => () => cancelAnimationFrame(seekRef.current.raf), [])
 
   /* Dragging the strip pulls the music past the playhead, the way you would
      push a tape along: it is the only way to scrub on a phone, where there

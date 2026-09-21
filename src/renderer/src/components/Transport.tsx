@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { fmtTime } from '../lib/format'
+import { useFrameSeek } from '../lib/seek'
 import { PlayIcon, PauseIcon, ExternalIcon } from './Icons'
 
 export type PresetId = 'all' | 'karaoke' | 'acapella' | 'drumnbass'
@@ -40,6 +41,7 @@ function SeekBar({
   // the pointer doing the dragging, so a second finger cannot hijack it
   const dragId = useRef<number | null>(null)
   const [dragging, setDragging] = useState(false)
+  const queueSeek = useFrameSeek(onSeek)
 
   useEffect(() => {
     if (!playing) return
@@ -58,7 +60,7 @@ function SeekBar({
     const rect = barRef.current?.getBoundingClientRect()
     if (!rect || duration <= 0) return
     const f = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width))
-    onSeek(f * duration)
+    queueSeek(f * duration)
   }
 
   return (
@@ -69,7 +71,8 @@ function SeekBar({
       <div
         ref={barRef}
         onPointerDown={(e) => {
-          if (dragId.current !== null) return
+          // a new touch takes over, rather than being turned away by a drag
+          // whose end was never seen
           dragId.current = e.pointerId
           setDragging(true)
           // the marker comes to the finger, wherever on the bar it landed
@@ -90,6 +93,10 @@ function SeekBar({
           setDragging(false)
         }}
         onPointerCancel={() => {
+          dragId.current = null
+          setDragging(false)
+        }}
+        onLostPointerCapture={() => {
           dragId.current = null
           setDragging(false)
         }}
