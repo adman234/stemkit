@@ -1,28 +1,51 @@
-# StemKit
+# StemKit (web version)
 
-Split any YouTube song into isolated stems — **vocals, drums, bass, guitar, piano** and more — right on your machine.
+Split any YouTube song into isolated stems (vocals, drums, bass, guitar, piano and
+more) on your own server, then play them back in the browser with a fader per stem,
+the video alongside, and the song's chords on a timeline. Runs as a Docker container
+with an Unraid template, and works from a phone.
 
-Search YouTube or paste a link, pick the instruments you want, and play the result like a mini DAW: the video on one side, every stem on its own fader, all perfectly in sync. Karaoke, acapellas and instrumentals are one click away.
-
-Everything runs locally — no accounts, no API keys. Your songs, searches and audio never leave your machine. The app sends one tiny anonymous ping per day (a random install id + version/OS) so I can count how many people use it — see [Privacy](#privacy) for details.
-
-![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-black) ![local](https://img.shields.io/badge/100%25-local-emerald)
+This is a fork of [StemKit](https://github.com/danielravina/stemkit) by
+[Daniel Ravina](https://github.com/danielravina), a desktop app for macOS, Windows and
+Linux. The React UI and the separation pipeline are his. This fork serves them over
+HTTP from a container instead of wrapping them in Electron, so any browser on your
+network can use one shared library. It is not intended to be merged back upstream; for
+the desktop app, use [upstream's releases](https://github.com/danielravina/stemkit/releases).
 
 <p align="center">
-  <img src="docs/stemkit.png" alt="StemKit splitting Queen's Bohemian Rhapsody into six stems — video player, presets and color-coded waveform lanes" width="100%" />
+  <img src="docs/stemkit.png" alt="StemKit with a song split into six stems: video player, presets and color-coded waveform lanes" width="100%" />
 </p>
 
-## Web version (Docker / Unraid)
+## What is different from upstream
 
-This fork adds a browser version of StemKit that runs as a server in a container. It is the same React UI and the same separation pipeline as the desktop app, served over HTTP instead of wrapped in Electron, so any browser on your network can search, split, play and download stems. The library lives on the server and is shared by every browser.
+- **Runs as a server.** Python, CUDA PyTorch 2.8 (CUDA 12.8, so RTX 50 series cards
+  work) and ffmpeg are baked into the image. No first-run download, no auto-updater and
+  no usage ping. The library lives on the server and is shared by every browser.
+- **Per-song engine and options**: a Best engine (BS-Roformer SW with real guitar and
+  piano stems), studio vocals, a second pass and a drum kit split, alongside upstream's
+  Demucs.
+- **Key and chord detection** with a zoomable chord timeline, hand corrections, and
+  guitar chord shapes on hover.
+- **Downloaded video playback** that stays in sync without rebuffering, as an
+  alternative to the YouTube embed.
+- **Phone support**: touch controls, a lighter playback mode, and compressed copies of
+  the stems so the player loads quickly.
+- **Browser export**: one stem as WAV, or every stem plus the mix as a ZIP.
+- Optional basic auth, automatic cleanup of songs not played for a while, and the
+  large folders (songs, models) can live on their own volumes.
+
+## Install
 
 ```bash
 docker run -d --name stemkit --gpus all -p 8080:8080   -v /path/to/stemkit-data:/config ghcr.io/adman234/stemkit:latest
 ```
 
-Then open `http://SERVER:8080`. Leave out `--gpus all` to split on the CPU.
+Open `http://SERVER:8080`. Leave out `--gpus all` to split on the CPU. GPU splits need
+NVIDIA driver 570 or newer on the host.
 
-**Unraid:** from the Unraid terminal, fetch the template, then go to Docker, Add Container, and pick `stemkit` from the template list. GPU splits need the Nvidia Driver plugin.
+**Unraid:** fetch the template from the Unraid terminal, then go to Docker > Add
+Container and pick `stemkit` from the template list. GPU splits need the Nvidia Driver
+plugin.
 
 ```bash
 wget -O /boot/config/plugins/dockerMan/templates-user/my-stemkit.xml https://raw.githubusercontent.com/adman234/stemkit/main/unraid/stemkit.xml
@@ -34,11 +57,14 @@ wget -O /boot/config/plugins/dockerMan/templates-user/my-stemkit.xml https://raw
 | `STEMKIT_USERNAME` | empty | Username for basic auth. Empty accepts any username |
 | `YTDLP_AUTO_UPDATE` | `true` | Installs the newest yt-dlp into `/config/python-overrides` at start |
 | `STEMKIT_ATTENTION` | `efficient` | CUDA attention kernel for the studio vocals model: `efficient`, `flash` or `math` |
-| `STEMKIT_KEEP_DAYS` | unset | Removes songs that have not been played for this many days. Empty or `0` keeps them for ever |
+| `STEMKIT_KEEP_DAYS` | unset | Removes songs that have not been played for this many days. Empty or `0` keeps them forever |
+| `STEMKIT_SONGS` / `STEMKIT_MODELS` | under `/config` | Move the library or the model downloads to another volume |
 | `PUID` / `PGID` / `UMASK` | `99` / `100` / `022` | Owner and mask for files written to `/config` |
 | `PORT` | `8080` | Port the server listens on inside the container |
 
-**Engines and options.** The add song panel picks the engine, the instruments and a few options per song:
+## Engines and options
+
+The add song panel picks the engine, the instruments and a few options per song.
 
 | Choice | What it does | Score | Time for a 4 min song (RTX 4070 SUPER) | Peak VRAM | Download |
 | --- | --- | --- | --- | --- | --- |
@@ -49,138 +75,37 @@ wget -O /boot/config/plugins/dockerMan/templates-user/my-stemkit.xml https://raw
 | Split drum kit | MDX23C DrumSep turns the drums stem into kick, snare, toms, hi-hat, ride and crash | | +10 s | about 1.2 GB | 438 MB |
 | Key and chords | BTC chord recognition marks the chords on a timeline and names the key. It listens to the harmonic stems, not the full mix | | +5 s | about 0.6 GB | 12 MB |
 
-The chord timeline zooms: scroll on it, or use the plus and minus buttons. Zoomed in, the playhead stays in the middle and the music slides past it, so long songs stay readable; "reset" returns to the whole song with a travelling playhead. Clicking a chord plays from there and opens a picker for correcting it by hand, kept in `chords.json` alongside the detected label so it can be put back. Hovering a chord shows three ways to play it on guitar, from a trimmed copy of [chords-db](https://github.com/tombatossals/chords-db) (MIT).
+Scores are the median SDR over the 50 MUSDB18 test clips, averaged over vocals, drums,
+bass and other (higher is cleaner). Steps run one after another, so peak VRAM is the
+largest single step. On a CPU, Quick stays reasonable but the Roformer models take 15
+minutes or more per song. Models download into `/config/models` the first time they are
+needed, or ahead of time from Settings.
 
-Chords and key show as a clickable timeline in the player, and any song already in the library can be analysed from a link there without splitting it again. On a synthesised progression with known chords the labels matched 93% of the time (99% counting roots only). Real music is harder: it reads pop, rock and folk well, and struggles with dense or ambiguous material, where the key confidence shown in the player drops. `python/chords.py` writes `chords.json` next to the stems.
+Chord detection reads pop, rock and folk well and struggles with dense or ambiguous
+material, where the key confidence shown in the player drops. Guitar shapes come from a
+trimmed copy of [chords-db](https://github.com/tombatossals/chords-db) (MIT).
 
-Scores are the median SDR over the 50 MUSDB18 test clips, averaged over vocals, drums, bass and other (higher is cleaner). Steps run one after another, so peak VRAM is the largest single step, not the sum; two songs splitting at once need about twice that. On a CPU, Quick stays reasonable but the roformer models take 15 minutes or more per song. Models download into `/config/models` the first time they are needed, or ahead of time from Settings.
+## Video playback
 
-**Video playback.** The player keeps the picture with the stems, which are the master clock. Two sources are possible:
+The stems are the master clock. By default the video is the YouTube embed, which the
+app only corrects for drift above a second, because every seek makes YouTube rebuffer.
+Turn on "Download the video" in Settings (or use the link in the player) to save a
+silent 360p, 480p or 720p copy instead, which is kept in sync smoothly.
 
-- **The YouTube embed** (default). The app can only correct it by seeking it, and a seek makes YouTube rebuffer, so corrections are rare: only drift above 1 second that lasts more than 1.5 seconds, at most one correction every 6 seconds, and it stops after three corrections that did not help. Chasing every small drift is what made the player stutter with a spinner every second or two.
-- **A downloaded video**, served from `/config/songs/<id>/video.mp4`. Turn on "Download the video" in Settings to save one with each split, or use the link in the player for a song already in the library. Local playback is kept in step by running the video a fraction faster or slower, which is invisible, so it never rebuffers or jumps. Video only, no audio, roughly 10 to 40 MB per song depending on the quality setting (360p, 480p or 720p).
-
-`npm run web:test` runs a simulation of the sync loop against a fake video element, including a stalled video and a browser that refuses to play.
+## Storage
 
 Everything persistent is under `/config`: `songs/` (the library), `models/` (optional checkpoints and the demucs weights), `settings.json`, `library.json` and `thumbs/`. The two that grow can be sent elsewhere without moving the rest: mount another volume and point `STEMKIT_SONGS` or `STEMKIT_MODELS` at it (`-v /mnt/user/media/stemkit:/songs -e STEMKIT_SONGS=/songs`). Both are also in the Unraid template under advanced settings. Moving an existing library is a matter of stopping the container, copying `songs/` across and setting the variable. If YouTube starts answering with "sign in to confirm you're not a bot", export a Netscape format `cookies.txt` from a logged in browser and put it at `/config/cookies.txt`.
 
-Differences from the desktop app:
-
-- Python, CUDA PyTorch (2.8, CUDA 12.8, so RTX 50 series cards work) and ffmpeg are baked into the image, so there is no first-run setup download. The host needs NVIDIA driver 570 or newer for GPU splits.
-- GPU splitting is switched on automatically the first time the server starts with a GPU visible.
-- Export downloads through the browser: a single stem as WAV, or every stem plus the full mix as a ZIP.
-- No auto-updater (pull a new image instead) and no usage ping.
+## Development
 
 Developing the web version: `npm run web:build` builds the UI into `out/web` and the server into `out/server`. `npm run web:server` rebuilds and starts the server on port 8080, and `npm run web:dev` runs a Vite dev server that proxies `/api` to it. Point the server at a local Python environment with `STEMKIT_PYTHON`, at ffmpeg with `STEMKIT_FFMPEG`, and at a data folder with `STEMKIT_DATA`. The server code is in `src/server` and reuses the desktop pipeline in `src/main` unchanged (see `scripts/build-server.mjs`).
 
-## Features
-
-- Built-in YouTube search, or paste a link
-- Choose your instruments individually; the right separation engine is picked for you
-- Tight audio/video sync with instant, artifact-free seeking
-- One-click presets: **All · Karaoke · Acapella · Drums + Bass**
-- Per-stem mute/solo/volume, waveforms with click-to-seek
-- Parallel background splitting with live progress
-- Export any stem (or all) as WAV
-- Fully offline after setup — separation runs on Apple Silicon (MPS), NVIDIA GPUs (CUDA) or CPU; ffmpeg included
-
-## Download
-
-Grab installers from [Releases](https://github.com/danvelope/stemkit/releases):
-- **macOS** (Apple Silicon): `StemKit-x.y.z-mac-arm64.dmg`
-- **Windows**: `StemKit-Setup-x.y.z.exe` (installer) or portable `.zip`
-- **Linux** (x64): `StemKit-x.y.z-linux-x86_64.AppImage` (portable, self-updating) or `StemKit-x.y.z-linux-amd64.deb`
-
-First launch creates a private Python environment and downloads the separation engine (~2 GB) — one time. ffmpeg is bundled — nothing else to install.
-
-Optional quality upgrades live behind a gear icon in the app (Settings), each with its own one-time download:
-- **Studio-quality vocals** (Mel-Band Roformer): +913 MB — runs on GPU or CPU (CPU is slower)
-- **Fine-tuned demucs** (htdemucs_ft): +~320 MB, up to 4× slower
-- **Refinement passes**: 2 shifts instead of 1, up to 3× slower
-
-> **macOS first launch**: builds are signed with a Developer ID but not notarized, so macOS may say it "cannot verify the developer". One-time fix: **System Settings → Privacy & Security → Open Anyway** (or `xattr -cr /Applications/StemKit.app`).
->
-> **Windows**: SmartScreen may warn on first run — "More info → Run anyway".
-
-## Requirements
-
-- **macOS 12+** (Apple Silicon) or **Windows 10/11** (x64) or **Linux x64** (Ubuntu 22.04+ or equivalent; NVIDIA driver for GPU splits)
-- No manual installs: if no Python 3.9+ is detected, StemKit downloads a private runtime (python-build-standalone) during first-launch setup
-- Node.js 20+ only for building from source
-
-## Develop
-
-```bash
-npm install
-npm run dev
-```
-
-Wrong Node version? Scripts auto-relaunch with a suitable one (nvm / nvm-windows).
-
-## Build & release
-
-```bash
-bash scripts/fetch-ffmpeg.sh        # mac/linux (one time)
-powershell scripts/fetch-ffmpeg.ps1 # windows (one time)
-
-npm run dist        # mac dmg -> release/
-npm run dist:win    # windows nsis+zip -> release/
-npm run dist:linux  # linux AppImage+deb (x64) -> release/
-npm run dist:all    # both (on the matching OS)
-```
-
-> **Linux**: building the `.deb` needs `dpkg` + `fakeroot` on the host; running the `.AppImage` needs FUSE. In-app self-update works on the AppImage — `.deb` installs update by re-downloading.
-
-Releases are built by GitHub Actions:
-- push a tag `v*` → binaries attach to a draft GitHub Release
-- `workflow_dispatch` ("Run workflow") → on-demand artifacts on the run page
-
-macOS builds are Developer-ID-signed when the certificate is available — see **Signing in CI** below for the one-time setup, plus optional notarization.
-
-### Signing in CI (one-time setup)
-
-Local builds sign with your keychain cert automatically. CI runners have empty keychains, so hand them the certificate via repo **secrets**:
-
-1. Keychain Access → My Certificates → right-click `Developer ID Application: ...` → Export → `.p12` (set an export password)
-2. Base64 it and add these repo secrets:
-   - `CSC_MAC_P12` — the base64 string: `base64 -i developer-id.p12 | pbcopy`
-   - `CSC_MAC_PASSWORD` — the export password from step 1
-3. Optional (full notarization, zero Gatekeeper prompts): add `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` **and** set repo variable `ENABLE_NOTARIZATION` to `true` (Settings → Secrets and variables → Actions → Variables). Requires an **active** Apple Developer membership — Apple's notary service rejects expired accounts.
-
-Without these secrets CI falls back to ad-hoc signing (app runs, but Gatekeeper complains on download).
-
-## How it works
-
-```
-YouTube URL ──► yt-dlp (+JS runtime) ──► bundled ffmpeg ──► mel-band roformer (vocals) ─┐
-                                        │                                               ├─► stems/*.wav
-                                        └─────────────► demucs htdemucs ────────────────┘
-                                             (drums/bass/other, shift-averaged)
-
-Electron renderer ◄──── IPC events ─────┘
-video iframe (muted) + Web Audio stem playback · master clock = the audio itself
-```
-
 ## Notes
 
-- Downloading audio from YouTube violates their ToS for public products — keep this personal.
-- yt-dlp breaks occasionally when YouTube changes things; the error dialog offers a one-click update (updates `yt-dlp` + the challenge solver together).
+- Downloading audio from YouTube is against YouTube's terms. Keep this personal.
+- yt-dlp breaks occasionally when YouTube changes things. The image updates it at
+  every start unless `YTDLP_AUTO_UPDATE=false`.
 
-## Privacy
+## License
 
-- **Never leaves your machine:** the videos you download, the songs you split, your library, your searches and your audio — none of it is uploaded anywhere. All separation runs locally.
-- **Anonymous usage count:** on each launch the app sends one small POST to a Cloudflare Worker (`stemkit-stats.danielravina.workers.dev`) — at most once per day. It contains a **random install id** (generated locally, stored in the app's settings folder), the app version, OS and architecture. No IP-address-based profiles are built, no cookies, no identifiers tied to you, no analytics SDKs.
-- **What it's for:** counting installs and active usage (the same stats you'd get from GitHub release downloads, minus auto-update noise). The counter code is in [`telemetry-worker/`](telemetry-worker) — inspectable like the rest of the app.
-- **Fully offline builds:** if you'd rather send nothing, build from source and remove `src/main/telemetry.ts` (or block the worker domain in your firewall) — everything else works identically offline.
-
-## Layout
-
-```
-src/main         Electron main process (pipeline, env bootstrap, library)
-src/preload      IPC bridge
-src/renderer     React UI (player, sync engine, waveforms)
-python/          separate.py (demucs) and roformer.py (neural vocals) with JSON progress output
-python/vendor/   patched model code — see python/vendor/README.md
-scripts/         node runner, ffmpeg fetchers
-build/           icon sources
-```
+MIT, as upstream. See [LICENSE](LICENSE).
