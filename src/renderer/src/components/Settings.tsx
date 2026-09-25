@@ -199,39 +199,26 @@ export function Settings({ settings, gpu, nvidiaGpu, onChange, onClose }: Props)
 
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <p className="text-[13px] font-medium">Download the video</p>
+                <p className="text-[13px] font-medium">Video quality</p>
                 <p className="text-[11.5px] text-white/40 leading-relaxed mt-0.5">
-                  Saves the video with each split and plays it from the server, so the picture stays with the
-                  stems instead of streaming from YouTube and stuttering. Songs already in your library get a
-                  download link in the player.
+                  For songs split with Video picked on the add song screen. Taller looks better and takes more
+                  disk space.
                 </p>
               </div>
-              <Toggle on={settings.downloadVideo} onClick={() => onChange({ downloadVideo: !settings.downloadVideo })} />
-            </div>
-
-            {settings.downloadVideo && (
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <p className="text-[13px] font-medium">Video quality</p>
-                  <p className="text-[11.5px] text-white/40 leading-relaxed mt-0.5">
-                    Taller video looks better and takes more disk space, roughly 10 to 40 MB per song.
-                  </p>
-                </div>
-                <div className="flex shrink-0 rounded-lg bg-white/[0.06] p-0.5 border border-white/[0.08]">
-                  {VIDEO_HEIGHTS.map((h) => (
-                    <button
-                      key={h}
-                      onClick={() => onChange({ videoHeight: h })}
-                      className={`no-drag px-2.5 h-6 rounded-md text-[12px] font-semibold transition-colors ${
-                        settings.videoHeight === h ? 'bg-white text-black' : 'text-white/45 hover:text-white/80'
-                      }`}
-                    >
-                      {h}p
-                    </button>
-                  ))}
-                </div>
+              <div className="flex shrink-0 rounded-lg bg-white/[0.06] p-0.5 border border-white/[0.08]">
+                {VIDEO_HEIGHTS.map((h) => (
+                  <button
+                    key={h}
+                    onClick={() => onChange({ videoHeight: h })}
+                    className={`no-drag px-2.5 h-6 rounded-md text-[12px] font-semibold transition-colors ${
+                      settings.videoHeight === h ? 'bg-white text-black' : 'text-white/45 hover:text-white/80'
+                    }`}
+                  >
+                    {h}p
+                  </button>
+                ))}
               </div>
-            )}
+            </div>
 
           </section>
         </div>

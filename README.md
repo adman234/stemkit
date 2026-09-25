@@ -27,10 +27,12 @@ the desktop app, use [upstream's releases](https://github.com/danielravina/stemk
 - **Key and chord detection** with a zoomable chord timeline, hand corrections, and
   guitar chord shapes on hover.
 - **Downloaded video playback** that stays in sync without rebuffering, as an
-  alternative to the YouTube embed.
-- **Phone support**: touch controls, a lighter playback mode, and compressed copies of
-  the stems so the player loads quickly.
-- **Browser export**: one stem as WAV, or every stem plus the mix as a ZIP.
+  alternative to the YouTube embed, or just the cover image, chosen per song.
+- **Phone support**: touch controls, pausing when the phone switches apps, and compressed
+  copies of the stems so the player loads quickly.
+- **Compact storage**: stems are kept as FLAC, about a tenth of the float WAVs the
+  splitter makes, at a depth set per container.
+- **Browser export**: one stem as WAV, or every stem plus the original audio as a ZIP.
 - Optional basic auth, automatic cleanup of songs not played for a while, and the
   large folders (songs, models) can live on their own volumes.
 
@@ -59,6 +61,7 @@ wget -O /boot/config/plugins/dockerMan/templates-user/my-stemkit.xml https://raw
 | `STEMKIT_ATTENTION` | `efficient` | CUDA attention kernel for the studio vocals model: `efficient`, `flash` or `math` |
 | `STEMKIT_KEEP_DAYS` | unset | Removes songs that have not been played for this many days. Empty or `0` keeps them forever |
 | `STEMKIT_SONGS` / `STEMKIT_MODELS` | under `/config` | Move the library or the model downloads to another volume |
+| `STEMKIT_STEM_FORMAT` | `flac16` | How stems are kept on disk: `flac16`, `flac24` or `wav`. See [Stem storage](#stem-storage) |
 | `PUID` / `PGID` / `UMASK` | `99` / `100` / `022` | Owner and mask for files written to `/config` |
 | `PORT` | `8080` | Port the server listens on inside the container |
 
@@ -87,14 +90,47 @@ trimmed copy of [chords-db](https://github.com/tombatossals/chords-db) (MIT).
 
 ## Video playback
 
-The stems are the master clock. By default the video is the YouTube embed, which the
-app only corrects for drift above a second, because every seek makes YouTube rebuffer.
-Turn on "Download the video" in Settings (or use the link in the player) to save a
-silent 360p, 480p or 720p copy instead, which is kept in sync smoothly.
+The stems are the master clock. With **Video** picked under Picture on the add song
+screen (the default), a silent 360p, 480p or 720p copy is downloaded with each split and
+kept in sync smoothly; the quality is in Settings. Until it arrives, and for songs from
+before, the player uses the YouTube embed, which it only corrects for drift above a
+second, because every seek makes YouTube rebuffer. **Thumbnail** skips the download and
+shows the cover image, and the player has a link to fetch the video later.
 
 ## Storage
 
 Everything persistent is under `/config`: `songs/` (the library), `models/` (optional checkpoints and the demucs weights), `settings.json`, `library.json` and `thumbs/`. The two that grow can be sent elsewhere without moving the rest: mount another volume and point `STEMKIT_SONGS` or `STEMKIT_MODELS` at it (`-v /mnt/user/media/stemkit:/songs -e STEMKIT_SONGS=/songs`). Both are also in the Unraid template under advanced settings. Moving an existing library is a matter of stopping the container, copying `songs/` across and setting the variable. If YouTube starts answering with "sign in to confirm you're not a bot", export a Netscape format `cookies.txt` from a logged in browser and put it at `/config/cookies.txt`.
+
+### Stem storage
+
+The splitter produces 32-bit float WAV, about 20 MB per stem per minute, so a five minute
+song split eleven ways (the Best engine plus the drum kit) used to take about 1.2 GB. Once
+a split is finished its stems are compressed, in the format set by `STEMKIT_STEM_FORMAT`:
+
+| Value | Five minute song, 11 stems | Against the float original |
+| --- | --- | --- |
+| `flac16` (default, also when unset) | about 170 MB | about 70 dB clear: CD quality, no audible difference |
+| `flac24` | about 365 MB | about 112 dB clear: identical in practice |
+| `wav` | about 1.2 GB | exact, stored as split |
+
+Measured on a dense rock track, counting the original audio and the playback copies;
+songs with quiet or empty stems come out smaller. For scale, YouTube hands over audio at
+around 120 kbps, so even `flac16` keeps far more than the source carries, and the
+separation itself is only accurate to about 10 dB.
+
+- It is an environment variable on purpose: whoever runs the container decides how much
+  disk the library uses, not anyone with the web page open.
+- Downloads and **Export everything** still hand out WAV, at the depth the stems are kept
+  at (16 or 24-bit). The export also includes the audio the song was split from.
+- The original download is kept as `songs/<id>/source.<ext>`, a few MB, instead of the
+  WAV decode of it that older versions kept (ten times the size and no better).
+- A stem that goes over full scale would clip in any integer format, so it stays float
+  WAV. It is rare, and the log says when it happens.
+- An existing library is converted in the background on the first start after updating,
+  one song at a time, with a `[storage]` line in the log per song. Converting float WAV to
+  `flac16` cannot be undone, although what it drops is far below hearing: set `flac24`
+  before updating to keep more. Switching to `wav` later converts nothing back, since that
+  would only cost space.
 
 ## Development
 

@@ -14,6 +14,30 @@ FLOAT = 3
 EXTENSIBLE = 0xFFFE
 
 
+def read_any(path):
+    """(audio, sample_rate) for any file ffmpeg can open. WAVs go through
+    read_wav, which keeps float stems exact; anything else (FLAC stems, the
+    original download a song was split from) is decoded by ffmpeg to float
+    at 44.1 kHz"""
+    if path.lower().endswith(".wav"):
+        return read_wav(path)
+    import os
+    import shutil
+    import subprocess
+
+    ffmpeg = shutil.which(os.environ.get("STEMKIT_FFMPEG") or "ffmpeg") or "ffmpeg"
+    proc = subprocess.run(
+        [ffmpeg, "-v", "error", "-i", path, "-f", "f32le", "-ac", "2", "-ar", "44100", "-"],
+        capture_output=True,
+    )
+    if proc.returncode != 0:
+        tail = proc.stderr.decode("utf8", "replace").strip()[-300:]
+        raise RuntimeError(tail or f"ffmpeg exited {proc.returncode}")
+    audio = np.frombuffer(proc.stdout, dtype="<f4")
+    audio = audio[: len(audio) // 2 * 2].reshape(-1, 2).T.copy()
+    return audio, 44100
+
+
 def read_wav(path):
     """returns (audio, sample_rate) with audio as (channels, samples) float32"""
     with open(path, "rb") as f:

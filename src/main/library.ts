@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, rmSync, mkdirSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, writeFileSync, rmSync, mkdirSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { join } from 'path'
 import { songsDir, userDataDir } from './env'
@@ -74,21 +74,42 @@ export function stemsFor(song?: Song | null): string[] {
   return song?.stems?.length ? song.stems : DEFAULT_STEMS
 }
 
-export function stemsPresent(videoId: string, stems: string[]): boolean {
+/* A stem is kept as FLAC, or as float WAV for songs from before stems were
+   compressed and for the rare stem that goes over full scale. This finds
+   whichever is there, FLAC first. */
+export function stemFile(videoId: string, name: string): string | null {
   const dir = stemsDir(videoId)
-  if (!existsSync(dir)) return false
-  return stems.every((name) => existsSync(join(dir, `${name}.wav`)))
+  for (const ext of ['flac', 'wav']) {
+    const file = join(dir, `${name}.${ext}`)
+    if (existsSync(file)) return file
+  }
+  return null
+}
+
+/* The audio a song was split from: the original download (source.webm,
+   source.m4a and so on), or for older songs the WAV decode they kept. */
+export function sourceFile(videoId: string): string | null {
+  const dir = songDir(videoId)
+  if (!existsSync(dir)) return null
+  const kept = readdirSync(dir).find((f) => f.startsWith('source.') && !f.endsWith('.part'))
+  if (kept) return join(dir, kept)
+  const mix = mixWavPath(videoId)
+  return existsSync(mix) ? mix : null
+}
+
+export function stemsPresent(videoId: string, stems: string[]): boolean {
+  if (!existsSync(stemsDir(videoId))) return false
+  return stems.every((name) => stemFile(videoId, name) !== null)
 }
 
 export async function stemBuffers(videoId: string, stems?: string[]): Promise<Record<string, Uint8Array>> {
   const list = stems ?? stemsFor(loadSongs().find((s) => s.videoId === videoId))
-  const dir = stemsDir(videoId)
   const out: Record<string, Uint8Array> = {}
   // async parallel reads so ~400MB of WAV doesn't block the main process
   await Promise.all(
     list.map(async (name) => {
-      const file = join(dir, `${name}.wav`)
-      if (!existsSync(file)) throw new Error(`Missing stem ${name} for ${videoId}`)
+      const file = stemFile(videoId, name)
+      if (!file) throw new Error(`Missing stem ${name} for ${videoId}`)
       out[name] = new Uint8Array(await readFile(file))
     })
   )

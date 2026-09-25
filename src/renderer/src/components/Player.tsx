@@ -129,6 +129,9 @@ export function Player({ song, settings }: Props): React.ReactElement {
   const stemMeta = useMemo(() => buildStemMeta(Object.keys(buffers) as StemId[]), [buffers])
 
   const youtubeUrl = `https://www.youtube.com/watch?v=${song.videoId}`
+  // split with Thumbnail picked and no video fetched since: the cover image
+  // stands in, rather than streaming the video from YouTube
+  const thumbnailOnly = song.options?.picture === 'thumbnail' && !song.video
   const addedLabel = new Date(song.addedAt).toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
@@ -181,6 +184,11 @@ export function Player({ song, settings }: Props): React.ReactElement {
   }, [song.videoId, reloads])
 
   useEffect(() => {
+    if (thumbnailOnly) {
+      hostRef.current?.destroy()
+      hostRef.current = null
+      return
+    }
     if (decoding || decodeError) return
     const wantsLocal = !!song.video
     if (hostRef.current) {
@@ -216,7 +224,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
     return () => {
       disposed = true
     }
-  }, [song.videoId, song.video, decoding, decodeError])
+  }, [song.videoId, song.video, decoding, decodeError, thumbnailOnly])
 
   useEffect(() => {
     setChords(null)
@@ -444,7 +452,10 @@ export function Player({ song, settings }: Props): React.ReactElement {
               <div className="absolute -inset-4 bg-violet-500/10 blur-3xl rounded-full pointer-events-none" />
               <div className="absolute inset-0 rounded-xl overflow-hidden ring-1 ring-white/10 bg-black shadow-2xl shadow-black/60">
                 <div ref={containerRef} className="absolute inset-0 [&_iframe]:w-full [&_iframe]:h-full" />
-                {!ytReady && (
+                {thumbnailOnly && (
+                  <Thumb videoId={song.videoId} className="absolute inset-0 w-full h-full object-cover" />
+                )}
+                {!ytReady && !thumbnailOnly && (
                   <div className="absolute inset-0 flex items-center justify-center animate-pulse">
                     <span className="text-[10px] text-white/40 tracking-widest uppercase">loading…</span>
                   </div>
@@ -540,9 +551,11 @@ export function Player({ song, settings }: Props): React.ReactElement {
                       }}
                       className="no-drag text-violet-300 hover:text-violet-200 transition-colors"
                     >
-                      {videoStuck
-                        ? 'The YouTube player keeps falling behind. Download the video for smooth sync →'
-                        : 'Download the video for smooth sync →'}
+                      {thumbnailOnly
+                        ? 'Download the video →'
+                        : videoStuck
+                          ? 'The YouTube player keeps falling behind. Download the video for smooth sync →'
+                          : 'Download the video for smooth sync →'}
                     </button>
                   )}
                   {videoError && <span className="block text-rose-300 mt-0.5">{videoError}</span>}

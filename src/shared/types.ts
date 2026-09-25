@@ -28,6 +28,9 @@ export interface SplitOptions {
   drumKit: boolean
   // work out the key and the chord progression
   chords: boolean
+  // what plays beside the stems: the video, downloaded to stay in step, or
+  // only the cover image. Absent on songs from before the choice existed
+  picture?: 'video' | 'thumbnail'
 }
 
 export interface ChordSegment {

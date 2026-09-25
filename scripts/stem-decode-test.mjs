@@ -126,7 +126,7 @@ function wav({ format = 3, bits = 32, channels = 2, sampleRate = 44100, frames =
 
 let failures = 0
 function check(name, ok, detail) {
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : ` — ${detail}`}`)
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${ok || detail === undefined ? '' : ` (${detail})`}`)
   if (!ok) failures++
 }
 

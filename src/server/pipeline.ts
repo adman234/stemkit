@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { createInterface } from 'readline'
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync } from 'fs'
-import { dirname, join } from 'path'
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'fs'
+import { basename, dirname, extname, join } from 'path'
 import type { JobEvent, JobStage, SplitOptions } from '../shared/types'
 import { parseVideoId } from '../shared/url'
 import {
@@ -15,6 +15,7 @@ import {
   type PlannedStep
 } from '../shared/engines'
 import { broadcast } from './events'
+import { STEM_FORMAT, compressStem, flacCopy } from './storage'
 import {
   chordsScript,
   ensureModel,
@@ -35,7 +36,10 @@ import {
   mixWavPath,
   rawDownloadPath,
   songDir,
+  sourceFile,
+  stemFile,
   stemsDir,
+  stemsFor,
   stemsPresent,
   upsertSong
 } from '../main/library'
@@ -74,8 +78,8 @@ export function ensurePreview(
 ): Promise<boolean> {
   const out = previewPath(videoId, stem, format)
   if (existsSync(out)) return Promise.resolve(true)
-  const source = join(stemsDir(videoId), `${stem}.wav`)
-  if (!existsSync(source)) return Promise.resolve(false)
+  const source = stemFile(videoId, stem)
+  if (!source) return Promise.resolve(false)
   const key = `${videoId}/${stem}.${format}`
   const started = Date.now()
   let job = previewJobs.get(key)
@@ -153,18 +157,17 @@ const chordJobs = new Set<string>()
    analysis and no vocals to mistake for harmony. Falls back to the mix */
 function chordInputs(videoId: string): { paths: string[]; source: string } {
   const song = loadSongs().find((s) => s.videoId === videoId)
-  const dir = stemsDir(videoId)
   const harmonic = ['bass', 'other', 'guitar', 'piano']
     .filter((name) => song?.stems?.includes(name as never))
-    .map((name) => join(dir, `${name}.wav`))
-    .filter((file) => existsSync(file))
+    .map((name) => stemFile(videoId, name))
+    .filter((file): file is string => file !== null)
   if (harmonic.length > 0) {
     return {
       paths: harmonic,
-      source: `stems: ${harmonic.map((f) => f.split(/[\\/]/).pop()?.replace('.wav', '')).join(', ')}`
+      source: `stems: ${harmonic.map((f) => basename(f, extname(f))).join(', ')}`
     }
   }
-  return { paths: [mixWavPath(videoId)], source: 'full mix' }
+  return { paths: [sourceFile(videoId) ?? mixWavPath(videoId)], source: 'full mix' }
 }
 
 /* runs chord detection for a song already in the library */
@@ -429,6 +432,10 @@ export async function startJob(
   }
 
   const options = rawOptions ? normalizeSplit(rawOptions) : legacySplit(stems)
+  // what the player shows beside the stems: the video, downloaded to play in
+  // step, or only the cover image. A client that does not say gets whatever
+  // the settings file has
+  const picture = options.picture ?? (loadSettings().downloadVideo ? 'video' : 'thumbnail')
   const tag = splitTag(options)
   const expected = outputStems(options)
   const job: ActiveJob = { videoId, tag, cancelled: false }
@@ -447,7 +454,13 @@ export async function startJob(
       expected.every((s) => existing.stems?.includes(s)) &&
       stemsPresent(videoId, existing.stems ?? [])
     if (covered && existing) {
-      send({ kind: 'done', data: { videoId, song: existing } })
+      // same split, but the picture choice may have changed
+      const song =
+        existing.options?.picture === picture
+          ? existing
+          : upsertSong({ ...existing, options: { ...existing.options!, picture } })[0]
+      if (picture === 'video' && !existing.video) void fetchVideo(videoId)
+      send({ kind: 'done', data: { videoId, song } })
       return
     }
     if (existing) rmSync(songDir(videoId), { recursive: true, force: true })
@@ -520,12 +533,14 @@ export async function startJob(
       'pcm_s16le',
       mixWavPath(videoId)
     ])
-    rmSync(rawPath, { force: true })
+    // the download is what gets kept: the WAV made from it is ten times the
+    // size and no better, and only has to exist while the split runs
+    renameSync(rawPath, join(dir, `source${extname(rawPath)}`))
     if (!alive(job)) return
     progress(job, 'convert', 100)
 
     // the video downloads in the background: the split does not wait for it
-    if (loadSettings().downloadVideo) void fetchVideo(videoId)
+    if (picture === 'video') void fetchVideo(videoId)
 
     mkdirSync(stemsDir(videoId), { recursive: true })
     progress(job, 'separate', 0, 'Waiting for a free engine slot…')
@@ -552,6 +567,14 @@ export async function startJob(
       rmSync(join(dir, 'instrumental.wav'), { force: true })
       rmSync(join(dir, 'studio-vocals'), { recursive: true, force: true })
 
+      // chords and the drum kit have read the float WAVs by now, so they can
+      // be stored the way the container is set up to keep them
+      if (STEM_FORMAT !== 'wav') {
+        progress(job, 'finalize', 0, 'Compressing stems')
+        await compressSong(videoId, expected)
+      }
+      rmSync(mixWavPath(videoId), { force: true })
+
       progress(job, 'finalize', 100, 'Adding to library')
       const songs = upsertSong({
         videoId,
@@ -561,7 +584,7 @@ export async function startJob(
         model: tag,
         stems: expected,
         took: Math.round((Date.now() - startedAt) / 1000),
-        options
+        options: { ...options, picture }
       })
       send({ kind: 'done', data: { videoId, song: songs[0] } })
       // the playback copies are not worth making the split wait for
@@ -575,6 +598,91 @@ export async function startJob(
   } finally {
     jobs.delete(videoId)
   }
+}
+
+/* ---------- storage ---------- */
+
+async function compressSong(videoId: string, stems: string[]): Promise<void> {
+  const ffmpeg = getStatus().ffmpeg.path
+  if (!ffmpeg) return
+  for (const name of stems) {
+    const wav = join(stemsDir(videoId), `${name}.wav`)
+    if (!existsSync(wav)) continue
+    const { result, reason } = await compressStem(ffmpeg, wav, STEM_FORMAT)
+    if (result === 'kept' && reason) console.log(`[storage] ${videoId}/${name}: left as float WAV, ${reason}`)
+    if (result === 'failed') console.warn(`[storage] ${videoId}/${name}: could not compress, ${reason}`)
+  }
+}
+
+function folderBytes(dir: string): number {
+  if (!existsSync(dir)) return 0
+  let total = 0
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name)
+    total += entry.isDirectory() ? folderBytes(path) : statSync(path).size
+  }
+  return total
+}
+
+let compacting = false
+
+/* Songs split before stems were compressed are brought into line in the
+   background, one at a time, so an existing library shrinks on the first
+   start after an update. Only WAVs are touched: a stem already in FLAC keeps
+   the depth it was stored with, and a switch to wav later converts nothing
+   back, since that would only cost space. The WAV mix older songs kept
+   becomes source.flac, which is exact because it was 16-bit to begin with. */
+export async function compactLibrary(): Promise<void> {
+  const ffmpeg = getStatus().ffmpeg.path
+  if (!ffmpeg || compacting) return
+  compacting = true
+  let songs = 0
+  let freed = 0
+  try {
+    for (const song of loadSongs()) {
+      const { videoId } = song
+      // a song being split or analysed is still using its files
+      if (jobs.has(videoId) || chordJobs.has(videoId)) continue
+      const dir = songDir(videoId)
+      if (!existsSync(dir)) continue
+      const before = folderBytes(dir)
+      let touched = false
+
+      if (STEM_FORMAT !== 'wav') {
+        for (const name of stemsFor(song)) {
+          const wav = join(stemsDir(videoId), `${name}.wav`)
+          if (!existsSync(wav)) continue
+          if (existsSync(wav.replace(/\.wav$/, '.flac'))) {
+            // finished before a restart cut the tidy-up short
+            rmSync(wav, { force: true })
+            touched = true
+            continue
+          }
+          const { result, reason } = await compressStem(ffmpeg, wav, STEM_FORMAT)
+          if (result === 'compressed') touched = true
+          else if (reason) console.log(`[storage] ${videoId}/${name}: left as float WAV, ${reason}`)
+        }
+      }
+
+      const mix = mixWavPath(videoId)
+      const source = sourceFile(videoId)
+      if (existsSync(mix) && source === mix) {
+        if (await flacCopy(ffmpeg, mix, join(dir, 'source.flac'))) {
+          rmSync(mix, { force: true })
+          touched = true
+        }
+      }
+
+      if (touched) {
+        songs++
+        freed += before - folderBytes(dir)
+        console.log(`[storage] ${videoId}: ${(before / 1048576).toFixed(0)} MB to ${(folderBytes(dir) / 1048576).toFixed(0)} MB`)
+      }
+    }
+  } finally {
+    compacting = false
+  }
+  if (songs) console.log(`[storage] compacted ${songs} songs, ${(freed / 1073741824).toFixed(2)} GB freed`)
 }
 
 async function separate(job: ActiveJob, o: SplitOptions, steps: PlannedStep[], device: string): Promise<void> {

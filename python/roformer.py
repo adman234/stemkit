@@ -68,13 +68,13 @@ def crash_message(e):
 
 
 def load_wav(path):
-    # stems are float WAVs, which the stdlib wave module cannot read
-    from wavio import read_wav
+    # stems are float WAV or FLAC, neither of which the stdlib wave module reads
+    from wavio import read_any
 
     try:
-        return read_wav(path)
+        return read_any(path)
     except Exception as e:
-        fail(f"cannot read wav {path}: {e}")
+        fail(f"cannot read audio {path}: {e}")
 
 
 def save_wav_f32(path, data, sr):

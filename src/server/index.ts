@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
+import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { extname, join, normalize, sep } from 'path'
-import { timingSafeEqual } from 'crypto'
+import { randomUUID, timingSafeEqual } from 'crypto'
 import type { AppSettings, EnvStatus } from '../shared/types'
 import {
   APP_DIR,
@@ -25,10 +25,20 @@ import { attachClient } from './events'
 import { writeZip, zipSize, type ZipEntry } from './zip'
 // desktop main-process modules, reused as-is (see scripts/build-server.mjs)
 import { loadSettings, migrateSettings, saveSettings } from '../main/settings'
-import { loadSongs, mixWavPath, removeSong, stemsDir, stemsFor, touchSong } from '../main/library'
+import {
+  loadSongs,
+  removeSong,
+  songDir,
+  sourceFile,
+  stemFile,
+  stemsFor,
+  touchSong
+} from '../main/library'
+import { STEM_FORMATS, STEM_FORMAT_SETTING, wavCopy } from './storage'
 import {
   buildPreviews,
   cancelJob,
+  compactLibrary,
   type PreviewFormat,
   chordsPath,
   detectChords,
@@ -331,29 +341,40 @@ route('GET', '/api/songs/:videoId/stems/:stem', async (req, res, params, url) =>
   const videoId = videoIdParam(params)
   const stem = params.stem.replace(/\.wav$/, '')
   if (!STEM_NAME.test(stem)) throw new HttpError(400, 'Invalid stem name')
-  const file = join(stemsDir(videoId), `${stem}.wav`)
-  if (!existsSync(file)) throw new HttpError(404, `Missing stem ${stem}`)
-  if (!url.searchParams.has('download')) {
+  const stored = stemFile(videoId, stem)
+  if (!stored) throw new HttpError(404, `Missing stem ${stem}`)
+  const download = url.searchParams.has('download')
+  if (!download) {
     // playback should be using a compressed copy; if it is not, the reason
     // is in the [preview] line above this one
-    console.log(`[stem] ${videoId}/${stem}: serving the full WAV for playback`)
+    console.log(`[stem] ${videoId}/${stem}: serving a WAV for playback`)
     touchSong(videoId)
   }
-  const st = statSync(file)
+  const st = statSync(stored)
   const etag = `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`
   const headers: Record<string, string | number> = {
     'Content-Type': 'audio/wav',
     'Cache-Control': 'private, no-cache',
     ETag: etag
   }
-  if (url.searchParams.has('download')) {
+  if (download) {
     headers['Content-Disposition'] = attachment(`${sanitizeName(songTitle(videoId))} - ${stem}.wav`)
   } else if (req.headers['if-none-match'] === etag) {
     res.writeHead(304, headers)
     res.end()
     return
   }
-  headers['Content-Length'] = st.size
+  // a FLAC stem goes out as WAV at its own depth, so a download is still a WAV
+  const scratch = exportScratch(videoId)
+  let file: string
+  try {
+    file = await wavCopy(needFfmpeg(), stored, scratch)
+  } catch (err) {
+    rmSync(scratch, { recursive: true, force: true })
+    throw err
+  }
+  res.on('close', () => rmSync(scratch, { recursive: true, force: true }))
+  headers['Content-Length'] = statSync(file).size
   res.writeHead(200, headers)
   createReadStream(file).pipe(res)
 })
@@ -362,29 +383,47 @@ route('GET', '/api/songs/:videoId/export.zip', async (_req, res, params) => {
   const videoId = videoIdParam(params)
   const song = loadSongs().find((s) => s.videoId === videoId)
   const title = sanitizeName(song?.title ?? videoId)
-  const entries: ZipEntry[] = []
-  for (const name of stemsFor(song)) {
-    const path = join(stemsDir(videoId), `${name}.wav`)
-    if (!existsSync(path)) throw new HttpError(404, `Missing stem ${name}`)
-    entries.push({ name: `${title}/${name}.wav`, path })
-  }
-  if (existsSync(mixWavPath(videoId))) {
-    entries.push({ name: `${title}/${title}.wav`, path: mixWavPath(videoId) })
-  }
-  res.writeHead(200, {
-    'Content-Type': 'application/zip',
-    'Content-Length': zipSize(entries),
-    'Content-Disposition': attachment(`${title}.zip`),
-    'Cache-Control': 'no-store'
-  })
+  // FLAC stems are turned back into WAV next to the song rather than in the
+  // container's /tmp, which on Unraid lives inside the small docker image
+  const scratch = exportScratch(videoId)
   try {
-    await writeZip(res, entries)
-    res.end()
-  } catch (err) {
-    console.error(`[export] ${videoId}: ${err instanceof Error ? err.message : String(err)}`)
-    res.destroy()
+    const entries: ZipEntry[] = []
+    for (const name of stemsFor(song)) {
+      const stored = stemFile(videoId, name)
+      if (!stored) throw new HttpError(404, `Missing stem ${name}`)
+      entries.push({ name: `${title}/${name}.wav`, path: await wavCopy(needFfmpeg(), stored, scratch) })
+    }
+    // the audio the song was split from, as it was downloaded
+    const source = sourceFile(videoId)
+    if (source) entries.push({ name: `${title}/${title}${extname(source)}`, path: source })
+    res.writeHead(200, {
+      'Content-Type': 'application/zip',
+      'Content-Length': zipSize(entries),
+      'Content-Disposition': attachment(`${title}.zip`),
+      'Cache-Control': 'no-store'
+    })
+    try {
+      await writeZip(res, entries)
+      res.end()
+    } catch (err) {
+      console.error(`[export] ${videoId}: ${err instanceof Error ? err.message : String(err)}`)
+      res.destroy()
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true })
   }
 })
+
+/* a folder of its own per request, so two exports of one song never share */
+function exportScratch(videoId: string): string {
+  return join(songDir(videoId), `.export-${randomUUID().slice(0, 8)}`)
+}
+
+function needFfmpeg(): string {
+  const ffmpeg = getStatus().ffmpeg.path
+  if (!ffmpeg) throw new HttpError(503, 'ffmpeg is missing, so stored stems cannot be turned into WAV')
+  return ffmpeg
+}
 
 route('POST', '/api/jobs', async (req) => {
   const body = await readJson(req)
@@ -574,6 +613,12 @@ async function startup(): Promise<void> {
   // an install from before the defaults changed is brought up to them once
   migrateSettings()
 
+  const { format, invalid } = STEM_FORMAT_SETTING
+  if (invalid) {
+    console.warn(`[storage] STEMKIT_STEM_FORMAT=${invalid} is not one of ${STEM_FORMATS.join(', ')}, using flac16`)
+  }
+  console.log(`[storage] stems are stored as ${format}`)
+
   if (keepDays()) {
     console.log(`[keep] songs are removed when they have not been played for ${keepDays()} days`)
     pruneSongs()
@@ -586,6 +631,8 @@ async function startup(): Promise<void> {
   })
 
   await detectTools()
+  // needs ffmpeg, so it waits for the tools; the split engine can be missing
+  void compactLibrary()
   if (!getStatus().ready) return
   const gpu = await hasGpuAcceleration()
   void detectNvidiaGpu()

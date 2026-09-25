@@ -34,6 +34,7 @@ function loadSplit(): SplitOptions {
     if (!stored) return { ...DEFAULT_SPLIT, stems: [...DEFAULT_SPLIT.stems] }
     const saved = JSON.parse(stored)
     const split = normalizeSplit(saved)
+    split.picture = saved?.picture === 'thumbnail' ? 'thumbnail' : 'video'
     return {
       ...split,
       studioVocals: saved?.studioVocals === true,
@@ -102,6 +103,7 @@ export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettin
   const engine = engineInfo(effective.engine)
   const selected = new Set<StemId>(effective.stems)
   const hasStems = split.stems.length > 0
+  const picture = split.picture ?? 'video'
   const notDownloaded = (ids: string[]): number =>
     ids
       .filter((id) => !models.find((m) => m.id === id)?.ready)
@@ -335,6 +337,30 @@ export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettin
                   </button>
                 )
               })}
+            </div>
+          </div>
+
+          <div>
+            <SectionLabel>Picture</SectionLabel>
+            <div className="mt-1.5 flex items-center justify-between gap-3">
+              <p className="text-[11.5px] text-white/40 leading-relaxed">
+                {picture === 'video'
+                  ? 'Downloads the video to play in step with the stems.'
+                  : 'Shows the cover image only, and skips the video download.'}
+              </p>
+              <div className="flex shrink-0 rounded-lg bg-white/[0.06] p-0.5 border border-white/[0.08]">
+                {(['video', 'thumbnail'] as const).map((choice) => (
+                  <button
+                    key={choice}
+                    onClick={() => updateSplit({ picture: choice })}
+                    className={`no-drag px-3 h-7 rounded-md text-[12px] font-semibold transition-colors ${
+                      picture === choice ? 'bg-white text-black' : 'text-white/45 hover:text-white/80'
+                    }`}
+                  >
+                    {choice === 'video' ? 'Video' : 'Thumbnail'}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 

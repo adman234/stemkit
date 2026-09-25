@@ -122,7 +122,8 @@ export const DEFAULT_SPLIT: SplitOptions = {
   studioVocals: false,
   secondPass: false,
   drumKit: false,
-  chords: true
+  chords: true,
+  picture: 'video'
 }
 
 /* validates options from a client (or localStorage) into a usable shape */
@@ -138,7 +139,8 @@ export function normalizeSplit(raw: unknown): SplitOptions {
     studioVocals: o.studioVocals === true && stems.includes('vocals'),
     secondPass: o.secondPass === true,
     drumKit: o.drumKit === true && stems.includes('drums'),
-    chords: o.chords === true
+    chords: o.chords === true,
+    picture: o.picture === 'thumbnail' || o.picture === 'video' ? o.picture : undefined
   }
 }
 
