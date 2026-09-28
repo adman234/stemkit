@@ -4,7 +4,7 @@ import { DEFAULT_STEMS } from '../../../shared/types'
 import { decodeStem, engine, decodePayload, type BufferMap } from '../lib/engine'
 import { buildStemMeta } from '../lib/stems'
 import { fmtTime } from '../lib/format'
-import { Thumb } from '../lib/thumbs'
+import { SongThumb } from '../lib/thumbs'
 import { YouTubeHost, type YTState } from '../lib/youtube'
 import { LocalVideoHost, type VideoHost } from '../lib/video'
 import { StemLane } from './StemLane'
@@ -128,10 +128,12 @@ export function Player({ song, settings }: Props): React.ReactElement {
 
   const stemMeta = useMemo(() => buildStemMeta(Object.keys(buffers) as StemId[]), [buffers])
 
-  const youtubeUrl = `https://www.youtube.com/watch?v=${song.videoId}`
+  // local files have no video: the cover slot shows a placeholder instead
+  const isLocal = song.source === 'local'
+  const youtubeUrl = isLocal ? null : `https://www.youtube.com/watch?v=${song.videoId}`
   // split with Thumbnail picked and no video fetched since: the cover image
   // stands in, rather than streaming the video from YouTube
-  const thumbnailOnly = song.options?.picture === 'thumbnail' && !song.video
+  const thumbnailOnly = isLocal || (song.options?.picture === 'thumbnail' && !song.video)
   const addedLabel = new Date(song.addedAt).toLocaleDateString(undefined, {
     month: 'short',
     day: 'numeric',
@@ -453,7 +455,11 @@ export function Player({ song, settings }: Props): React.ReactElement {
               <div className="absolute inset-0 rounded-xl overflow-hidden ring-1 ring-white/10 bg-black shadow-2xl shadow-black/60">
                 <div ref={containerRef} className="absolute inset-0 [&_iframe]:w-full [&_iframe]:h-full" />
                 {thumbnailOnly && (
-                  <Thumb videoId={song.videoId} className="absolute inset-0 w-full h-full object-cover" />
+                  <SongThumb
+                    videoId={song.videoId}
+                    className="absolute inset-0 w-full h-full object-cover"
+                    iconClassName="w-10 h-10 text-white/25"
+                  />
                 )}
                 {!ytReady && !thumbnailOnly && (
                   <div className="absolute inset-0 flex items-center justify-center animate-pulse">
@@ -472,9 +478,10 @@ export function Player({ song, settings }: Props): React.ReactElement {
 
             <aside className="flex-1 min-w-0 glass rounded-2xl px-4 md:px-6 py-4 md:py-5 rise-in flex flex-col justify-between gap-3">
               <div className="flex items-center gap-4">
-                <Thumb
+                <SongThumb
                   videoId={song.videoId}
-                  className="hidden sm:block w-24 lg:w-32 h-[54px] lg:h-[72px] rounded-lg object-cover bg-white/5 shrink-0"
+                  className="hidden sm:flex w-24 lg:w-32 h-[54px] lg:h-[72px] rounded-lg object-cover bg-white/5 shrink-0"
+                  iconClassName="w-7 h-7 text-white/25"
                 />
                 <div className="min-w-0 flex-1">
                   <h3 className="text-base md:text-xl font-semibold leading-snug truncate">{song.title}</h3>
@@ -571,12 +578,14 @@ export function Player({ song, settings }: Props): React.ReactElement {
                   <DownloadIcon className="w-4 h-4" />
                   Export everything
                 </button>
-                <button
-                  onClick={() => window.stemkit.openExternal(youtubeUrl)}
-                  className="no-drag glass rounded-xl px-5 py-3 text-[13px] font-medium text-white/70 hover:text-white hover:bg-white/10 transition-colors"
-                >
-                  Open on YouTube
-                </button>
+                {youtubeUrl && (
+                  <button
+                    onClick={() => window.stemkit.openExternal(youtubeUrl)}
+                    className="no-drag glass rounded-xl px-5 py-3 text-[13px] font-medium text-white/70 hover:text-white hover:bg-white/10 transition-colors"
+                  >
+                    Open on YouTube
+                  </button>
+                )}
               </div>
             </aside>
           </div>
@@ -591,7 +600,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
             onPreset={applyPreset}
             master={master}
             onMaster={setMaster}
-            youtubeUrl={youtubeUrl}
+            youtubeUrl={youtubeUrl ?? undefined}
           />
 
           {chords && chords.segments.length > 0 && (

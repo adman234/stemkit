@@ -20,7 +20,8 @@ def crash_message(e):
     """top-level crash handler text: unreadable stderr tails (a bare python
     traceback or an unrelated warnings.warn line) become actionable errors"""
     msg = f"{e}"
-    if "no kernel image" in msg.lower():
+    low = msg.lower()
+    if "no kernel image" in low or "invalid device function" in low:
         return (
             "GPU engine incompatible with this GPU (compute capability not supported by the "
             "installed engine) - update StemKit or turn off GPU acceleration in Settings"
@@ -135,7 +136,7 @@ def main():
     else:
         device = args.device
     if device == "cuda" and not torch.cuda.is_available():
-        fail("GPU engine not available (no NVIDIA GPU, or the CUDA build of torch is not installed)")
+        fail("GPU engine not available (no supported NVIDIA/AMD GPU, or the GPU build of torch is not installed)")
     emit(type="progress", stage="model", pct=0, message=f"loading {args.model} on {device}")
 
     from demucs.apply import apply_model

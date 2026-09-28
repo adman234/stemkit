@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, createWriteStream, statSync, renameSync, readFil
 import { once } from 'events'
 import { Readable } from 'stream'
 import { delimiter, dirname, join, resolve } from 'path'
-import type { EngineStatus, ModelStatus } from '../shared/types'
+import type { EngineStatus, GpuVendor, ModelStatus } from '../shared/types'
 import { MODELS, type ModelId } from '../shared/engines'
 import { broadcast } from './events'
 
@@ -200,7 +200,10 @@ export function getStatus(): EnvState {
 let gpuProbe: Promise<boolean> | null = null
 let gpuInfo: boolean | undefined
 let gpuName: string | undefined
+let gpuBuild: GpuVendor | undefined
 
+/* torch answers to torch.cuda on both of its GPU builds; torch.version.hip
+   is only set on the ROCm one, which is how an AMD image is told apart */
 export function hasGpuAcceleration(): Promise<boolean> {
   if (process.env.STEMKIT_FORCE_CPU === '1') {
     gpuInfo = false
@@ -214,65 +217,105 @@ export function hasGpuAcceleration(): Promise<boolean> {
         'import torch\n' +
           'ok = torch.cuda.is_available()\n' +
           'print(1 if ok else 0)\n' +
-          'print(torch.cuda.get_device_name(0) if ok else "")'
+          'print(torch.cuda.get_device_name(0) if ok else "")\n' +
+          'print("amd" if getattr(torch.version, "hip", None) else "nvidia")'
       ],
       60000
     )
       .then((out) => {
-        const [flag, name] = out.trim().split(/\r?\n/)
+        const [flag, name, build] = out.trim().split(/\r?\n/)
         gpuName = name?.trim() || undefined
+        gpuBuild = build?.trim() === 'amd' ? 'amd' : 'nvidia'
         return flag?.trim() === '1'
       })
       .catch(() => false)
-      .then((gpu) => {
+      .then(async (gpu) => {
+        if (gpu && gpuBuild === 'amd') await applyGfxOverride()
         gpuInfo = gpu
-        console.log(gpu ? `[env] CUDA available: ${gpuName}` : '[env] no CUDA device, splits run on the CPU')
+        const api = gpuBuild === 'amd' ? 'ROCm' : 'CUDA'
+        console.log(gpu ? `[env] ${api} available: ${gpuName}` : `[env] no ${api} device, splits run on the CPU`)
         return gpu
       })
   }
   return gpuProbe
 }
 
+/* The ROCm wheels only carry kernels for some targets. Consumer RDNA2 and
+   RDNA3 parts (RX 6600 = gfx1032, 7600 = gfx1102, 680M = gfx1035) run the
+   nearest code object once HSA_OVERRIDE_GFX_VERSION says which; RDNA4 is
+   supported as is. From upstream's desktop engine. A value set on the
+   container wins */
+function gfxOverride(gfx: string): string | null {
+  const id = parseInt((gfx.match(/gfx(\d+)/) ?? [])[1] ?? '', 10)
+  if (Number.isNaN(id)) return null
+  if (id >= 1010 && id <= 1039) return '10.3.0'
+  if (id >= 1101 && id <= 1103) return '11.0.0'
+  return null
+}
+
+async function applyGfxOverride(): Promise<void> {
+  if (process.env.HSA_OVERRIDE_GFX_VERSION) return
+  const gfx = await runCapture(
+    PYTHON,
+    [
+      '-c',
+      'import torch;p=torch.cuda.get_device_properties(0);print(getattr(p,"gcnArchName","") or "gfx%d%02d" % (p.major, p.minor))'
+    ],
+    60000
+  ).catch(() => '')
+  const override = gfxOverride(gfx)
+  if (!override) return
+  // every python process the server starts from here on inherits it
+  process.env.HSA_OVERRIDE_GFX_VERSION = override
+  console.log(`[env] ${gfx.trim()} runs with HSA_OVERRIDE_GFX_VERSION=${override}`)
+}
+
 export function gpuAccelerationInfo(): boolean | undefined {
   return gpuInfo
 }
 
-let nvidiaProbe: Promise<boolean> | null = null
-let nvidiaInfo: boolean | undefined
+let vendorProbe: Promise<GpuVendor | undefined> | null = null
+let vendorInfo: GpuVendor | undefined
 
 /* gates the GPU toggle in Settings. Only a GPU that torch can actually use
-   counts: the desktop toggle offers a CUDA torch download, which the image
-   does not need. A card that nvidia-smi sees but torch cannot use (usually a
-   host driver too old for the image's CUDA 12.8 build) is logged instead */
-export function detectNvidiaGpu(): Promise<boolean> {
-  if (!nvidiaProbe) {
-    nvidiaProbe = Promise.all([
-      runCapture('nvidia-smi', ['--query-gpu=name,driver_version', '--format=csv,noheader'], 10000).catch(
-        () => ''
-      ),
-      hasGpuAcceleration()
-    ]).then(([smi, cuda]) => {
-      if (smi.trim() && !cuda) {
-        console.error(
-          `[env] nvidia-smi sees "${smi.trim()}" but torch cannot use it. The image needs NVIDIA driver 570 or newer.`
-        )
+   counts: the desktop toggle offers a torch download, which the image does
+   not need. A card the driver tool sees but torch cannot use (usually a host
+   driver too old for the image's build) is logged instead */
+export function detectGpuVendor(): Promise<GpuVendor | undefined> {
+  if (!vendorProbe) {
+    vendorProbe = hasGpuAcceleration().then(async (ok) => {
+      if (!ok) {
+        const smi =
+          gpuBuild === 'amd'
+            ? await runCapture('rocm-smi', ['--showproductname'], 10000).catch(() => '')
+            : await runCapture('nvidia-smi', ['--query-gpu=name,driver_version', '--format=csv,noheader'], 10000).catch(
+                () => ''
+              )
+        if (smi.trim()) {
+          console.error(
+            gpuBuild === 'amd'
+              ? '[env] rocm-smi sees a GPU but torch cannot use it. Pass /dev/kfd and /dev/dri through to the container.'
+              : `[env] nvidia-smi sees "${smi.trim()}" but torch cannot use it. The image needs NVIDIA driver 570 or newer.`
+          )
+        }
       }
-      nvidiaInfo = cuda
-      return cuda
+      vendorInfo = ok ? gpuBuild : undefined
+      return vendorInfo
     })
   }
-  return nvidiaProbe
+  return vendorProbe
 }
 
-export function nvidiaGpuInfo(): boolean | undefined {
-  return nvidiaInfo
+export function gpuVendorInfo(): GpuVendor | undefined {
+  return vendorInfo
 }
 
-/* the image already ships CUDA torch, so there is nothing to download: the
+/* the image already ships GPU torch, so there is nothing to download: the
    engine is "ready" exactly when a GPU is visible inside the container */
 export async function ensureGpuEngine(
   onProgress?: (pct: number) => void,
-  _requireNvidia = false
+  _requireVendor?: GpuVendor | null,
+  _force = false
 ): Promise<boolean> {
   const ok = await hasGpuAcceleration()
   // the pipeline passes a progress callback on every split; only the
@@ -281,7 +324,9 @@ export async function ensureGpuEngine(
     if (ok) sendEnvEvent('GPU engine ready', 'success')
     else
       sendEnvEvent(
-        'GPU engine install failed: no CUDA device is visible inside the container. Pass the GPU through (--runtime=nvidia) and restart it.',
+        gpuBuild === 'amd'
+          ? 'GPU engine install failed: no ROCm device is visible inside the container. Pass /dev/kfd and /dev/dri through and restart it.'
+          : 'GPU engine install failed: no CUDA device is visible inside the container. Pass the GPU through (--runtime=nvidia) and restart it.',
         'error'
       )
   }

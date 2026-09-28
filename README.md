@@ -33,6 +33,11 @@ the desktop app, use [upstream's releases](https://github.com/danielravina/stemk
 - **Compact storage**: stems are kept as FLAC, about a tenth of the float WAVs the
   splitter makes, at a depth set per container.
 - **Browser export**: one stem as WAV, or every stem plus the original audio as a ZIP.
+- **Audio file uploads**: the folder button next to the search box uploads an mp3,
+  wav, flac or other audio file from your device and splits it like a YouTube song
+  (upstream's "split a local file", done over HTTP).
+- **AMD GPUs**: a separate `latest-rocm` image carries upstream's experimental ROCm
+  support (see [AMD GPUs](#amd-gpus-experimental)).
 - Optional basic auth, automatic cleanup of songs not played for a while, and the
   large folders (songs, models) can live on their own volumes.
 
@@ -53,12 +58,29 @@ plugin.
 wget -O /boot/config/plugins/dockerMan/templates-user/my-stemkit.xml https://raw.githubusercontent.com/adman234/stemkit/main/unraid/stemkit.xml
 ```
 
+### AMD GPUs (experimental)
+
+AMD cards need the ROCm image and the GPU device nodes instead of `--gpus all`. This
+follows upstream's AMD support: Linux hosts only, torch 2.8 with ROCm 6.4, so RDNA4
+(RX 9070) works. RDNA2 and RDNA3 cards that the ROCm wheels do not cover directly get
+`HSA_OVERRIDE_GFX_VERSION` set automatically; set it yourself to override that.
+
+```bash
+docker run -d --name stemkit --device /dev/kfd --device /dev/dri -p 8080:8080   -v /path/to/stemkit-data:/config ghcr.io/adman234/stemkit:latest-rocm
+```
+
+On Unraid, use the same template, change the repository to
+`ghcr.io/adman234/stemkit:latest-rocm`, and replace `--runtime=nvidia` in Extra
+Parameters with `--device=/dev/kfd --device=/dev/dri`. The host needs the `amdgpu`
+driver loaded. This image has not been tested on AMD hardware yet.
+
 | Variable | Default | What it does |
 | --- | --- | --- |
 | `STEMKIT_PASSWORD` | empty | Turns on HTTP basic auth. There is no login otherwise, so keep the port on your LAN or behind a reverse proxy |
 | `STEMKIT_USERNAME` | empty | Username for basic auth. Empty accepts any username |
 | `YTDLP_AUTO_UPDATE` | `true` | Installs the newest yt-dlp into `/config/python-overrides` at start |
 | `STEMKIT_ATTENTION` | `efficient` | CUDA attention kernel for the studio vocals model: `efficient`, `flash` or `math` |
+| `STEMKIT_MAX_UPLOAD_MB` | `1024` | Largest audio file the upload button accepts |
 | `STEMKIT_KEEP_DAYS` | unset | Removes songs that have not been played for this many days. Empty or `0` keeps them forever |
 | `STEMKIT_SONGS` / `STEMKIT_MODELS` | under `/config` | Move the library or the model downloads to another volume |
 | `STEMKIT_STEM_FORMAT` | `flac16` | How stems are kept on disk: `flac16`, `flac24` or `wav`. See [Stem storage](#stem-storage) |

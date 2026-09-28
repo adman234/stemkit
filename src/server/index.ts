@@ -6,7 +6,7 @@ import type { AppSettings, EnvStatus } from '../shared/types'
 import {
   APP_DIR,
   appVersion,
-  detectNvidiaGpu,
+  detectGpuVendor,
   detectTools,
   engineStatus,
   ensureFtWeights,
@@ -16,7 +16,7 @@ import {
   gpuAccelerationInfo,
   hasGpuAcceleration,
   modelsDir,
-  nvidiaGpuInfo,
+  gpuVendorInfo,
   songsDir,
   updateYtDlp,
   userDataDir
@@ -47,8 +47,11 @@ import {
   hasChords,
   hasVideo,
   previewPath,
+  pruneUploads,
+  saveUpload,
   searchYouTube,
   startJob,
+  startLocalJob,
   videoPath
 } from './pipeline'
 import { MODELS } from '../shared/engines'
@@ -60,7 +63,8 @@ const WEB_ROOT = normalize(join(APP_DIR, 'out', 'web'))
 const USERNAME = process.env.STEMKIT_USERNAME ?? ''
 const PASSWORD = process.env.STEMKIT_PASSWORD ?? ''
 
-const VIDEO_ID = /^[\w-]{11}$/
+// a YouTube video id, or the id localSongId gives an uploaded file
+const VIDEO_ID = /^(?:[\w-]{11}|local-[0-9a-f]{8})$/
 const STEM_NAME = /^(vocals|drums|bass|other|piano|guitar|kick|snare|toms|hihat|ride|crash)$/
 
 const MIME: Record<string, string> = {
@@ -210,7 +214,7 @@ route('GET', '/api/events', async (_req, res) => {
 
 route('GET', '/api/status', async () => {
   await detectTools()
-  void detectNvidiaGpu()
+  void detectGpuVendor()
   const s = getStatus()
   const status: EnvStatus = {
     python: s.python,
@@ -219,7 +223,7 @@ route('GET', '/api/status', async () => {
     bootstrapping: s.bootstrapping,
     updating: s.updating,
     gpu: gpuAccelerationInfo(),
-    nvidiaGpu: nvidiaGpuInfo()
+    gpuVendor: gpuVendorInfo()
   }
   if (status.ready) void hasGpuAcceleration()
   return status
@@ -437,6 +441,39 @@ route('POST', '/api/jobs', async (req) => {
   return { started: true }
 })
 
+// STEMKIT_MAX_UPLOAD_MB caps one uploaded audio file (default 1024)
+const MAX_UPLOAD_BYTES = (Number(process.env.STEMKIT_MAX_UPLOAD_MB) || 1024) * 1024 * 1024
+
+/* the raw file is the body, and its name comes in a header, so a large file
+   streams to disk instead of being buffered for a multipart parser */
+route('POST', '/api/uploads', async (req) => {
+  let name = ''
+  try {
+    name = decodeURIComponent(String(req.headers['x-file-name'] ?? ''))
+  } catch {}
+  if (!name) throw new HttpError(400, 'Missing file name')
+  const declared = Number(req.headers['content-length'] ?? 0)
+  if (declared > MAX_UPLOAD_BYTES) {
+    throw new HttpError(413, `The file is over the ${Math.round(MAX_UPLOAD_BYTES / 1024 / 1024)} MB upload limit`)
+  }
+  try {
+    return { token: await saveUpload(req as AsyncIterable<Buffer>, name, MAX_UPLOAD_BYTES) }
+  } catch (err) {
+    throw new HttpError(400, err instanceof Error ? err.message : String(err))
+  }
+})
+
+route('POST', '/api/jobs/local', async (req) => {
+  const body = await readJson(req)
+  if (typeof body.token !== 'string' || !body.token.trim()) throw new HttpError(400, 'Missing upload token')
+  let stems: string[] | undefined
+  if (Array.isArray(body.stems)) {
+    stems = body.stems.filter((s): s is string => typeof s === 'string' && STEM_NAME.test(s))
+  }
+  void startLocalJob(body.token, undefined, stems, body.options && typeof body.options === 'object' ? body.options : undefined)
+  return { started: true }
+})
+
 route('POST', '/api/jobs/cancel', async (req) => {
   const body = await readJson(req)
   const videoId = typeof body.videoId === 'string' && VIDEO_ID.test(body.videoId) ? body.videoId : undefined
@@ -633,9 +670,11 @@ async function startup(): Promise<void> {
   await detectTools()
   // needs ffmpeg, so it waits for the tools; the split engine can be missing
   void compactLibrary()
+  pruneUploads()
+  setInterval(pruneUploads, 6 * 60 * 60 * 1000).unref()
   if (!getStatus().ready) return
   const gpu = await hasGpuAcceleration()
-  void detectNvidiaGpu()
+  void detectGpuVendor()
 
   // first run: split on the GPU whenever one is visible, instead of the
   // desktop default of CPU until the user opts in

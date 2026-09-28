@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { AppSettings, EnvStatus, JobProgress, JobStage, Song, SplitOptions, UpdateEvent } from '../../shared/types'
-import { DEFAULT_SPLIT, splitTag } from '../../shared/engines'
+import { splitTag } from '../../shared/engines'
 import { parseVideoId } from '../../shared/url'
+import { localSongId, isLocalId } from '../../shared/local'
 import { Sidebar } from './components/Sidebar'
 import { Home } from './components/Home'
 import { Processing } from './components/Processing'
@@ -14,6 +15,11 @@ interface EnvLog {
   message: string
   level: string
 }
+
+// what the retry button re-runs: the original url or the picked local file
+type LastStart =
+  | { kind: 'url'; url: string; options: SplitOptions }
+  | { kind: 'local'; filePath: string; options: SplitOptions }
 
 function stageLabel(stage: JobStage, pct: number): string {
   switch (stage) {
@@ -41,8 +47,7 @@ export default function App(): React.ReactElement {
   const [activeId, setActiveId] = useState<string | null>(null)
   const [jobs, setJobs] = useState<Record<string, JobProgress>>({})
   const [errors, setErrors] = useState<Record<string, string>>({})
-  const [lastUrl, setLastUrl] = useState('')
-  const [lastOptions, setLastOptions] = useState<SplitOptions>(DEFAULT_SPLIT)
+  const [lastStart, setLastStart] = useState<LastStart | null>(null)
   const [envLogs, setEnvLogs] = useState<EnvLog[]>([])
   const [update, setUpdate] = useState<UpdateEvent | null>(null)
   const [appVersion, setAppVersion] = useState<string | undefined>(undefined)
@@ -105,8 +110,7 @@ export default function App(): React.ReactElement {
       const vid = parseVideoId(url)
       if (!vid) return
       setActiveId(vid)
-      setLastUrl(url)
-      setLastOptions(options)
+      setLastStart({ kind: 'url', url, options })
       setErrors((prev) => withoutKey(prev, vid))
       setJobs((prev) =>
         prev[vid]
@@ -121,6 +125,25 @@ export default function App(): React.ReactElement {
     []
   )
 
+  const startLocal = useCallback(
+    async (filePath: string, options: SplitOptions): Promise<void> => {
+      const id = localSongId(filePath)
+      // a local file has no video to download beside the stems
+      const local = { ...options, picture: 'thumbnail' as const }
+      const model = splitTag(local)
+      setActiveId(id)
+      setLastStart({ kind: 'local', filePath, options: local })
+      setErrors((prev) => withoutKey(prev, id))
+      setJobs((prev) =>
+        prev[id]
+          ? prev
+          : { ...prev, [id]: { videoId: id, stage: 'convert', pct: 0, message: 'Starting…', model } }
+      )
+      await window.stemkit.startLocalJob(filePath, undefined, local.stems, local)
+    },
+    []
+  )
+
   const cancelSelectedJob = useCallback(
     (videoId: string): void => {
       void window.stemkit.cancelJob(videoId)
@@ -130,13 +153,15 @@ export default function App(): React.ReactElement {
   )
 
   const retryJob = useCallback((): void => {
-    if (lastUrl) void startUrl(lastUrl, lastOptions)
-  }, [lastUrl, lastOptions, startUrl])
+    if (!lastStart) return
+    if (lastStart.kind === 'url') void startUrl(lastStart.url, lastStart.options)
+    else void startLocal(lastStart.filePath, lastStart.options)
+  }, [lastStart, startUrl, startLocal])
 
   const updateYtDlp = useCallback(async (): Promise<void> => {
     await window.stemkit.envUpdateYtDlp()
-    if (lastUrl) void startUrl(lastUrl, lastOptions)
-  }, [lastUrl, lastOptions, startUrl])
+    if (lastStart?.kind === 'url') void startUrl(lastStart.url, lastStart.options)
+  }, [lastStart, startUrl])
 
   const deleteSong = useCallback(
     async (videoId: string): Promise<void> => {
@@ -228,6 +253,7 @@ export default function App(): React.ReactElement {
       <Processing
         job={selectedJob}
         error={selectedError}
+        isLocal={activeId ? isLocalId(activeId) : false}
         botSuspected={
           !!selectedError && /sign in|bot|confirm|unavailable|private/i.test(selectedError)
         }
@@ -245,6 +271,7 @@ export default function App(): React.ReactElement {
         pending={pendingMap}
         gpu={!!status.gpu && !!settings?.gpuSplit}
         onStart={(u, o) => void startUrl(u, o)}
+        onStartLocal={(path, o) => void startLocal(path, o)}
         onSelect={(id) => setActiveId(id)}
         onOpenSettings={() => {
           void window.stemkit.envStatus().then(setStatus)
@@ -298,7 +325,7 @@ export default function App(): React.ReactElement {
         <Settings
           settings={settings}
           gpu={status.gpu}
-          nvidiaGpu={status.nvidiaGpu}
+          gpuVendor={status.gpuVendor}
           onChange={(patch) => void window.stemkit.setSettings(patch)}
           onClose={() => setSettingsOpen(false)}
         />

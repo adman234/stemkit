@@ -12,16 +12,17 @@ import {
   ensureVocalsEngine,
   ensureFtWeights,
   ensureGpuEngine,
-  detectNvidiaGpu,
-  nvidiaGpuInfo,
+  detectGpuVendor,
+  gpuVendorInfo,
+  applyGpuOverride,
   hasGpuAcceleration,
   gpuAccelerationInfo,
   engineStatus,
   getStatus
 } from './env'
 import { loadSettings, saveSettings } from './settings'
-import { loadSongs, removeSong, stemBuffers, stemsDir, stemsFor, mixWavPath } from './library'
-import { startJob, cancelJob, searchYouTube } from './pipeline'
+import { loadSongs, removeSong, stemBuffers, stemsDir, stemsFor, mixWavPath, AUDIO_EXTENSIONS } from './library'
+import { startJob, startLocalJob, cancelJob, searchYouTube } from './pipeline'
 import { initUpdater } from './updater'
 import { runSmoke } from './smoke'
 import { getThumb, clearThumbMemo } from './thumbs'
@@ -134,18 +135,21 @@ app.whenReady().then(async () => {
     const settings = loadSettings()
     if (settings.roformerVocals) void ensureVocalsEngine()
     if (settings.htdemucsFt) void ensureFtWeights()
-    if (settings.gpuSplit) void ensureGpuEngine(undefined, true)
+    if (settings.gpuSplit) void detectGpuVendor().then((vendor) => ensureGpuEngine(undefined, vendor))
     // warm the informational GPU probe so Settings can show it right away
     void hasGpuAcceleration()
   }
 
   ipcMain.handle('env:status', async () => {
-    await detectTools()
-    void detectNvidiaGpu()
+  // restore the AMD ROCm override saved by a previous session's preflight
+  // before any python (venv probes, separation runs) can spawn
+  applyGpuOverride()
+  await detectTools()
+    void detectGpuVendor()
     const status = {
       ...getStatus(),
       gpu: gpuAccelerationInfo(),
-      nvidiaGpu: nvidiaGpuInfo()
+      gpuVendor: gpuVendorInfo()
     }
     // the probe results land on a later status call; never blocks ready
     if (status.ready) void hasGpuAcceleration()
@@ -169,6 +173,20 @@ app.whenReady().then(async () => {
   ipcMain.handle('jobs:start', async (_e, url: string, model?: string, stems?: string[]) => {
     void startJob(url, model, stems)
     return { started: true }
+  })
+  ipcMain.handle('jobs:start-local', async (_e, filePath: string, model?: string, stems?: string[]) => {
+    void startLocalJob(filePath, model, stems)
+    return { started: true }
+  })
+  ipcMain.handle('files:pick-audio', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Choose an audio file to split',
+      buttonLabel: 'Split',
+      properties: ['openFile'],
+      filters: [{ name: 'Audio files', extensions: AUDIO_EXTENSIONS }]
+    })
+    if (result.canceled || !result.filePaths[0]) return null
+    return result.filePaths[0]
   })
   ipcMain.handle('jobs:cancel', (_e, videoId?: string) => cancelJob(videoId))
 

@@ -18,10 +18,15 @@ RUN npm run web:build
 # ---- runtime ----
 FROM python:3.11-slim-bookworm
 
-# torch 2.8 with CUDA 12.8 runs on RTX 50 series (Blackwell) cards and older
-# ones alike, and needs NVIDIA driver 570 or newer on the host
+# GPU=cuda (the default): torch 2.8 with CUDA 12.8 runs on RTX 50 series
+# (Blackwell) cards and older ones alike, and needs NVIDIA driver 570 or newer
+# on the host.
+# GPU=rocm: torch 2.8 with ROCm 6.4 for AMD cards on a Linux host, RDNA4
+# (RX 9070) included. Experimental, as it is upstream
+ARG GPU=cuda
 ARG TORCH_VERSION=2.8.0
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu128
+# overrides the index GPU picks
+ARG TORCH_INDEX_URL=""
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -32,14 +37,19 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg tini ca-certificates libstdc++6 \
  && rm -rf /var/lib/apt/lists/*
 
-RUN python -m venv /opt/venv \
+RUN case "$GPU" in \
+      cuda) index="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu128}" ;; \
+      rocm) index="${TORCH_INDEX_URL:-https://download.pytorch.org/whl/rocm6.4}" ;; \
+      *) echo "GPU must be cuda or rocm, not $GPU" >&2; exit 1 ;; \
+    esac \
+ && python -m venv /opt/venv \
  && /opt/venv/bin/pip install --upgrade pip wheel setuptools \
- && /opt/venv/bin/pip install "torch==${TORCH_VERSION}" "torchaudio==${TORCH_VERSION}" --index-url "${TORCH_INDEX_URL}"
+ && /opt/venv/bin/pip install "torch==${TORCH_VERSION}" "torchaudio==${TORCH_VERSION}" --index-url "$index"
 
 COPY docker/requirements.txt /tmp/requirements.txt
 RUN /opt/venv/bin/pip install -r /tmp/requirements.txt \
  && rm /tmp/requirements.txt \
- && /opt/venv/bin/python -c "import torch, torchaudio, demucs, yt_dlp, packaging; assert torch.version.cuda, 'pip replaced the CUDA torch build'; print('torch', torch.__version__, 'cuda', torch.version.cuda)"
+ && GPU="$GPU" /opt/venv/bin/python -c "import os, torch, torchaudio, demucs, yt_dlp, packaging; gpu = os.environ['GPU']; build = torch.version.hip if gpu == 'rocm' else torch.version.cuda; assert build, 'pip replaced the ' + gpu + ' torch build'; print('torch', torch.__version__, gpu, build)"
 
 COPY --from=build /usr/local/bin/node /usr/local/bin/node
 
