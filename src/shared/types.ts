@@ -34,6 +34,10 @@ export interface AppSettings {
   // hide the YouTube video while playing: stems are always played locally,
   // this stops streaming the video and falls back to cached thumbnails
   hideVideo: boolean
+  // format used when exporting stems: wav is the lossless source format,
+  // aac (.m4a) is transcoded on export via the bundled ffmpeg. mp3 isn't an
+  // option — the bundled ffmpeg is a minimal static build without libmp3lame
+  exportFormat: 'wav' | 'aac'
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -41,7 +45,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   htdemucsFt: false,
   roformerVocals: false,
   gpuSplit: false,
-  hideVideo: false
+  hideVideo: false,
+  exportFormat: 'wav'
 }
 
 export interface EngineStatus {
