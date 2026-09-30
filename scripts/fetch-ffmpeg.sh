@@ -6,37 +6,54 @@ OS="$(uname -s)"
 mkdir -p "$ROOT/extras"
 
 # the pipeline resamples with soxr, so every bundled ffmpeg must be built
-# with libsoxr. There is no public static macOS arm64 build with libsoxr
-# (evermeet.cx is x86_64-only, osxexperts.net ships arm64 without soxr), so
-# the mac path compiles ffmpeg + soxr from source — Apple Silicon only,
-# matching the arm64-only electron build
+# with libsoxr. There is no public static macOS build with libsoxr for either
+# architecture (evermeet.cx is x86_64 without soxr, osxexperts.net ships arm64
+# without soxr), so the mac path compiles ffmpeg + soxr from source for
+# whichever arch the host Mac actually runs
 SOXR_VERSION="0.1.3"
 FFMPEG_VERSION="9.0.2"
 
+# detect the native CPU arch once. hw.optional.arm64 is kernel truth — a shell
+# or binary running under Rosetta makes uname -m report x86_64 even on an
+# Apple Silicon Mac
+function mac_native_arch() {
+  if [[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" == "1" ]]; then
+    echo "arm64"
+  else
+    echo "x86_64"
+  fi
+}
+
 function mac_ffmpeg_is_usable() {
   local bin="$1"
+  local expected_arch="$2"
   [[ -x "$bin" ]] || return 1
-  file "$bin" 2>/dev/null | grep -q arm64 || return 1
+  file "$bin" 2>/dev/null | grep -q "$expected_arch" || return 1
   "$bin" -hide_banner -buildconf 2>/dev/null | grep -q -- --enable-libsoxr
 }
 
 function build_mac_ffmpeg() {
   local out="$1"
-  # hw.optional.arm64 is kernel truth — a shell/binary running under Rosetta
-  # makes uname -m report x86_64
-  if [[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" != "1" ]]; then
-    echo "the macOS bundle targets Apple Silicon — run this on an arm64 Mac"
-    exit 1
+  local target_arch
+  target_arch="$(mac_native_arch)"
+
+  # if the script is running under Rosetta on an arm64 Mac (e.g. an x86_64
+  # bash from anaconda or Homebrew), re-exec natively so clang builds the
+  # correct slice — configure would otherwise pick x86_64 from uname -m
+  if [[ "$(uname -m)" != "$target_arch" ]]; then
+    exec arch -"$target_arch" /bin/bash "$0" "$@"
   fi
-  if [[ "$(uname -m)" != "arm64" ]]; then
-    # this script itself is running translated (e.g. an x86_64 anaconda or
-    # Homebrew bash resolved from PATH) — re-exec natively so clang builds
-    # the arm64 slice configure would otherwise pick
-    exec arch -arm64 /bin/bash "$0" "$@"
-  fi
+
   if ! command -v cmake >/dev/null 2>&1; then
     echo "cmake is required to build the bundled ffmpeg — install it first (e.g. brew install cmake)"
     exit 1
+  fi
+
+  # arm64 requires macOS 11.0+; x86_64 works back to 10.13
+  if [[ "$target_arch" == "arm64" ]]; then
+    local deploy_target="11.0"
+  else
+    local deploy_target="10.13"
   fi
 
   TMP="$(mktemp -d)"
@@ -44,20 +61,28 @@ function build_mac_ffmpeg() {
   PREFIX="$TMP/prefix"
   JOBS="$(sysctl -n hw.ncpu)"
 
-  echo "building libsoxr $SOXR_VERSION (arm64)..."
+  echo "building libsoxr $SOXR_VERSION ($target_arch)..."
   curl -fsSL -o "$TMP/soxr.tar.gz" "https://github.com/chirlu/soxr/archive/refs/tags/$SOXR_VERSION.tar.gz"
   tar -xzf "$TMP/soxr.tar.gz" -C "$TMP"
   cmake -S "$TMP/soxr-$SOXR_VERSION" -B "$TMP/soxr-build" \
     -DBUILD_SHARED_LIBS=OFF \
     -DBUILD_TESTS=OFF \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_OSX_ARCHITECTURES=arm64 \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+    -DCMAKE_OSX_ARCHITECTURES="$target_arch" \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET="$deploy_target" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" >/dev/null
   cmake --build "$TMP/soxr-build" --target install --parallel "$JOBS" >/dev/null
 
-  echo "building ffmpeg $FFMPEG_VERSION (arm64, static libsoxr) — this takes a few minutes..."
+  # x86_64 builds need nasm for hand-optimized assembly; rather than require
+  # another dependency, disable x86asm — the performance difference is
+  # negligible for audio processing
+  local x86asm_flag="--disable-x86asm"
+  if [[ "$target_arch" == "arm64" ]]; then
+    x86asm_flag=""
+  fi
+
+  echo "building ffmpeg $FFMPEG_VERSION ($target_arch, static libsoxr) — this takes a few minutes..."
   curl -fsSL -o "$TMP/ffmpeg.tar.xz" "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
   tar -xf "$TMP/ffmpeg.tar.xz" -C "$TMP"
   (
@@ -71,9 +96,10 @@ function build_mac_ffmpeg() {
       --disable-ffprobe \
       --disable-doc \
       --disable-debug \
+      $x86asm_flag \
       --pkg-config-flags=--static \
-      --extra-cflags="-I$PREFIX/include -mmacosx-version-min=11.0" \
-      --extra-ldflags="-L$PREFIX/lib -mmacosx-version-min=11.0" >/dev/null
+      --extra-cflags="-I$PREFIX/include -mmacosx-version-min=$deploy_target" \
+      --extra-ldflags="-L$PREFIX/lib -mmacosx-version-min=$deploy_target" >/dev/null
     make --silent --jobs "$JOBS" >/dev/null
   )
 
@@ -82,7 +108,7 @@ function build_mac_ffmpeg() {
   chmod +x "$out"
   xattr -dr com.apple.quarantine "$out" 2>/dev/null || true
 
-  if ! mac_ffmpeg_is_usable "$out"; then
+  if ! mac_ffmpeg_is_usable "$out" "$target_arch"; then
     echo "built ffmpeg is not usable (wrong arch or missing libsoxr)" >&2
     rm -f "$out"
     exit 1
@@ -91,7 +117,8 @@ function build_mac_ffmpeg() {
 
 if [[ "$OS" == "Darwin" ]]; then
   OUT="$ROOT/extras/ffmpeg-mac"
-  if mac_ffmpeg_is_usable "$OUT/ffmpeg"; then
+  EXPECTED_ARCH="$(mac_native_arch)"
+  if mac_ffmpeg_is_usable "$OUT/ffmpeg" "$EXPECTED_ARCH"; then
     echo "ffmpeg already present: $OUT/ffmpeg"
     "$OUT/ffmpeg" -version | head -1
     exit 0
