@@ -26,7 +26,7 @@ Everything runs locally — no accounts, no API keys. Your songs, searches and a
 ## Download
 
 Grab installers from [Releases](https://github.com/danvelope/stemkit/releases):
-- **macOS** (Apple Silicon): `StemKit-x.y.z-mac-arm64.dmg`
+- **macOS**: `StemKit-x.y.z-mac-arm64.dmg` (Apple Silicon) or `StemKit-x.y.z-mac-x64.dmg` (Intel)
 - **Windows**: `StemKit-Setup-x.y.z.exe` (installer) or portable `.zip`
 - **Linux** (x64): `StemKit-x.y.z-linux-x86_64.AppImage` (portable, self-updating) or `StemKit-x.y.z-linux-amd64.deb`
 
@@ -47,7 +47,7 @@ Optional quality upgrades live behind a gear icon in the app (Settings), each wi
 - No manual installs: if no Python 3.9+ is detected, StemKit downloads a private runtime (python-build-standalone) during first-launch setup
 - Node.js 20+ only for building from source
 
-> **Intel Mac**: supported for running from source. PyTorch publishes no macOS x86_64 wheels past 2.2.2, so first-launch setup installs that build instead of the 2.5.1 used everywhere else. MPS is still available on that build when the machine has a Metal-capable GPU (verified on an Intel Mac with a discrete GPU); integrated-only Macs fall back to CPU. Packaged `.dmg`/`.zip` targets are still `arm64`-only, so there is no Intel installer to download yet.
+> **Intel Mac**: PyTorch publishes no macOS x86_64 wheels past 2.2.2, so first-launch setup installs that build instead of the 2.5.1 used everywhere else. MPS is still available on that build when the machine has a Metal-capable GPU (verified on an Intel Mac with a discrete GPU); integrated-only Macs fall back to CPU.
 
 ## Develop
 
@@ -61,7 +61,7 @@ Wrong Node version? Scripts auto-relaunch with a suitable one (nvm / nvm-windows
 ## Build & release
 
 ```bash
-bash scripts/fetch-ffmpeg.sh        # mac (builds ffmpeg + libsoxr for the host arch, needs cmake) / linux (one time)
+bash scripts/fetch-ffmpeg.sh        # mac (compiles arm64 + x86_64 ffmpeg + libsoxr, needs cmake) / linux (one time)
 powershell scripts/fetch-ffmpeg.ps1 # windows (one time)
 
 npm run dist        # mac dmg -> release/
