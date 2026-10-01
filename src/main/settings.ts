@@ -24,7 +24,8 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
     htdemucsFt: !!merged.htdemucsFt,
     roformerVocals: !!merged.roformerVocals,
     gpuSplit: !!merged.gpuSplit,
-    hideVideo: !!merged.hideVideo
+    hideVideo: !!merged.hideVideo,
+    exportFormat: merged.exportFormat === 'aac' ? 'aac' : 'wav'
   }
   writeFileSync(settingsFile(), JSON.stringify(next, null, 2))
   for (const win of BrowserWindow.getAllWindows()) {
