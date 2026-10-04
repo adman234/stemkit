@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, shell, dialog } from 'electron'
 import { join, normalize, extname } from 'path'
 import { existsSync, copyFileSync, mkdirSync, createReadStream, statSync } from 'fs'
+import { spawn } from 'child_process'
 import { createServer, type Server } from 'http'
 import type { AddressInfo } from 'net'
 import type { AppSettings } from '../shared/types'
@@ -12,16 +13,17 @@ import {
   ensureVocalsEngine,
   ensureFtWeights,
   ensureGpuEngine,
-  detectNvidiaGpu,
-  nvidiaGpuInfo,
+  detectGpuVendor,
+  gpuVendorInfo,
+  applyGpuOverride,
   hasGpuAcceleration,
   gpuAccelerationInfo,
   engineStatus,
   getStatus
 } from './env'
 import { loadSettings, saveSettings } from './settings'
-import { loadSongs, removeSong, stemBuffers, stemsDir, stemsFor, mixWavPath } from './library'
-import { startJob, cancelJob, searchYouTube } from './pipeline'
+import { loadSongs, removeSong, stemBuffers, stemsDir, stemsFor, mixWavPath, AUDIO_EXTENSIONS } from './library'
+import { startJob, startLocalJob, cancelJob, searchYouTube } from './pipeline'
 import { initUpdater } from './updater'
 import { runSmoke } from './smoke'
 import { getThumb, clearThumbMemo } from './thumbs'
@@ -79,6 +81,24 @@ function sanitizeName(name: string): string {
   return clean.length > 0 ? clean.slice(0, 120) : 'stems'
 }
 
+function requireExportFfmpeg(): string {
+  const ffmpeg = getStatus().ffmpeg.path
+  if (!ffmpeg) {
+    throw new Error('Something went wrong with the built-in audio tools. Try reinstalling StemKit.')
+  }
+  return ffmpeg
+}
+
+// the bundled ffmpeg is a minimal static build without libmp3lame, so mp3
+// isn't an option — aac is a native encoder, no extra library needed
+function transcodeToAac(ffmpeg: string, input: string, output: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpeg, ['-y', '-i', input, '-c:a', 'aac', '-b:a', '256k', output])
+    child.on('error', reject)
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}`))))
+  })
+}
+
 async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
     width: 1360,
@@ -134,18 +154,21 @@ app.whenReady().then(async () => {
     const settings = loadSettings()
     if (settings.roformerVocals) void ensureVocalsEngine()
     if (settings.htdemucsFt) void ensureFtWeights()
-    if (settings.gpuSplit) void ensureGpuEngine(undefined, true)
+    if (settings.gpuSplit) void detectGpuVendor().then((vendor) => ensureGpuEngine(undefined, vendor))
     // warm the informational GPU probe so Settings can show it right away
     void hasGpuAcceleration()
   }
 
   ipcMain.handle('env:status', async () => {
-    await detectTools()
-    void detectNvidiaGpu()
+  // restore the AMD ROCm override saved by a previous session's preflight
+  // before any python (venv probes, separation runs) can spawn
+  applyGpuOverride()
+  await detectTools()
+    void detectGpuVendor()
     const status = {
       ...getStatus(),
       gpu: gpuAccelerationInfo(),
-      nvidiaGpu: nvidiaGpuInfo()
+      gpuVendor: gpuVendorInfo()
     }
     // the probe results land on a later status call; never blocks ready
     if (status.ready) void hasGpuAcceleration()
@@ -170,19 +193,42 @@ app.whenReady().then(async () => {
     void startJob(url, model, stems)
     return { started: true }
   })
+  ipcMain.handle('jobs:start-local', async (_e, filePath: string, model?: string, stems?: string[]) => {
+    void startLocalJob(filePath, model, stems)
+    return { started: true }
+  })
+  ipcMain.handle('files:pick-audio', async () => {
+    const result = await dialog.showOpenDialog({
+      title: 'Choose an audio file to split',
+      buttonLabel: 'Split',
+      properties: ['openFile'],
+      filters: [{ name: 'Audio files', extensions: AUDIO_EXTENSIONS }]
+    })
+    if (result.canceled || !result.filePaths[0]) return null
+    return result.filePaths[0]
+  })
   ipcMain.handle('jobs:cancel', (_e, videoId?: string) => cancelJob(videoId))
 
   ipcMain.handle('stem:export', async (_e, videoId: string, stem: string) => {
     const song = loadSongs().find((s) => s.videoId === videoId)
     const file = join(stemsDir(videoId), `${stem}.wav`)
     if (!existsSync(file)) throw new Error(`Missing stem ${stem}`)
+    const format = loadSettings().exportFormat
+    const ext = format === 'aac' ? 'm4a' : 'wav'
     const result = await dialog.showSaveDialog({
       title: `Export ${stem}`,
-      defaultPath: join(app.getPath('downloads'), `${sanitizeName(song?.title ?? videoId)} - ${stem}.wav`),
-      filters: [{ name: 'WAV audio', extensions: ['wav'] }]
+      defaultPath: join(
+        app.getPath('downloads'),
+        `${sanitizeName(song?.title ?? videoId)} - ${stem}.${ext}`
+      ),
+      filters: [{ name: format === 'aac' ? 'AAC audio' : 'WAV audio', extensions: [ext] }]
     })
     if (result.canceled || !result.filePath) return { saved: false }
-    copyFileSync(file, result.filePath)
+    if (format === 'aac') {
+      await transcodeToAac(requireExportFfmpeg(), file, result.filePath)
+    } else {
+      copyFileSync(file, result.filePath)
+    }
     return { saved: true, path: result.filePath }
   })
 
@@ -201,13 +247,21 @@ app.whenReady().then(async () => {
     if (result.canceled || !result.filePaths[0]) return { saved: false }
     const target = join(result.filePaths[0], sanitizeName(song?.title ?? videoId))
     mkdirSync(target, { recursive: true })
+    const format = loadSettings().exportFormat
+    const ext = format === 'aac' ? 'm4a' : 'wav'
+    const ffmpeg = format === 'aac' ? requireExportFfmpeg() : null
     for (const name of list) {
-      copyFileSync(join(dir, `${name}.wav`), join(target, `${name}.wav`))
+      const src = join(dir, `${name}.wav`)
+      const dest = join(target, `${name}.${ext}`)
+      if (ffmpeg) await transcodeToAac(ffmpeg, src, dest)
+      else copyFileSync(src, dest)
     }
     let count = list.length
     const mix = mixWavPath(videoId)
     if (existsSync(mix)) {
-      copyFileSync(mix, join(target, `${sanitizeName(song?.title ?? 'full track')}.wav`))
+      const mixDest = join(target, `${sanitizeName(song?.title ?? 'full track')}.${ext}`)
+      if (ffmpeg) await transcodeToAac(ffmpeg, mix, mixDest)
+      else copyFileSync(mix, mixDest)
       count += 1
     }
     return { saved: true, path: target, count }

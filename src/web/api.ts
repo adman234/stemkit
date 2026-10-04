@@ -13,6 +13,7 @@ import type {
   VideoEvent
 } from '../shared/types'
 import { playbackFormats } from '../shared/playback'
+import { AUDIO_EXTENSIONS } from '../shared/audio'
 
 /* Browser implementation of the window.stemkit bridge. The desktop preload
    forwards these calls to the Electron main process over IPC; here they go
@@ -69,6 +70,19 @@ function subscribe<T>(channel: string, cb: (data: T) => void): () => void {
   return () => {
     set.delete(listener)
   }
+}
+
+/* the browser's file picker. Resolves null when it is dismissed; browsers
+   without the cancel event just leave the promise waiting, which is harmless */
+function chooseFile(accept: string): Promise<File | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = accept
+    input.addEventListener('change', () => resolve(input.files?.[0] ?? null))
+    input.addEventListener('cancel', () => resolve(null))
+    input.click()
+  })
 }
 
 function download(href: string): void {
@@ -132,6 +146,22 @@ const api: StemKitApi = {
   searchYouTube: (query) => request<SearchResult[]>('GET', `/api/search?q=${encodeURIComponent(query)}`),
   startJob: (url, model, stems, options) =>
     request<{ started: boolean }>('POST', '/api/jobs', { url, model, stems, options }),
+  // the file goes to the server first; the token it returns stands in for
+  // the path the desktop app would have
+  pickAudioFile: async () => {
+    const file = await chooseFile(`audio/*,${AUDIO_EXTENSIONS.map((e) => `.${e}`).join(',')}`)
+    if (!file) return null
+    const res = await fetch('/api/uploads', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name) },
+      body: file
+    })
+    const data = (await res.json().catch(() => null)) as { token?: string; error?: string } | null
+    if (!res.ok || !data?.token) throw new Error(data?.error || `Upload failed (HTTP ${res.status})`)
+    return data.token
+  },
+  startLocalJob: (token, model, stems, options) =>
+    request<{ started: boolean }>('POST', '/api/jobs/local', { token, model, stems, options }),
   cancelJob: async (videoId) => {
     await request('POST', '/api/jobs/cancel', { videoId })
   },

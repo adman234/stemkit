@@ -1,9 +1,12 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { createInterface } from 'readline'
-import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'fs'
+import { createHash } from 'crypto'
+import { createWriteStream, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'fs'
 import { basename, dirname, extname, join } from 'path'
 import type { JobEvent, JobStage, SplitOptions } from '../shared/types'
 import { parseVideoId } from '../shared/url'
+import { localSongId } from '../shared/local'
+import { AUDIO_EXTENSIONS } from '../shared/audio'
 import {
   DEFAULT_SPLIT,
   MODELS,
@@ -25,6 +28,7 @@ import {
   msstScript,
   roformerScript,
   separateScript,
+  userDataDir,
   venvPython,
   venvYtDlp,
   ytDlpRuntimeArgs
@@ -41,7 +45,8 @@ import {
   stemsDir,
   stemsFor,
   stemsPresent,
-  upsertSong
+  upsertSong,
+  wavDuration
 } from '../main/library'
 import { cacheThumbnail } from '../main/thumbs'
 
@@ -414,6 +419,126 @@ function legacySplit(stems?: string[]): SplitOptions {
   })
 }
 
+/* The part both entry points share: returns true when the library already
+   holds this split, after telling the client so, and otherwise clears out
+   any older split of the same song and makes its folder */
+function reuseOrPrepare(videoId: string, tag: string, expected: string[], picture: 'video' | 'thumbnail'): boolean {
+  const existing = loadSongs().find((s) => s.videoId === videoId)
+  const covered =
+    !!existing?.options &&
+    splitTag(existing.options) === tag &&
+    expected.every((s) => existing.stems?.includes(s)) &&
+    stemsPresent(videoId, existing.stems ?? [])
+  if (covered && existing) {
+    // same split, but the picture choice may have changed
+    const song =
+      existing.options?.picture === picture
+        ? existing
+        : upsertSong({ ...existing, options: { ...existing.options!, picture } })[0]
+    if (picture === 'video' && !existing.video) void fetchVideo(videoId)
+    send({ kind: 'done', data: { videoId, song } })
+    return true
+  }
+  if (existing) rmSync(songDir(videoId), { recursive: true, force: true })
+  mkdirSync(songDir(videoId), { recursive: true })
+  return false
+}
+
+/* decodes the song's audio to the 44.1 kHz WAV every engine reads */
+async function convertToMix(job: ActiveJob, inputPath: string): Promise<void> {
+  progress(job, 'convert', 0, 'Converting to WAV')
+  const ffmpeg = getStatus().ffmpeg.path
+  if (!ffmpeg) throw new Error('ffmpeg is missing from the container')
+  await runProcess(job, ffmpeg, [
+    '-y',
+    '-i',
+    inputPath,
+    '-af',
+    'aresample=44100:resampler=soxr',
+    '-ar',
+    '44100',
+    '-ac',
+    '2',
+    '-c:a',
+    'pcm_s16le',
+    mixWavPath(job.videoId)
+  ])
+}
+
+interface SplitMeta {
+  title: string
+  duration: number
+  addedAt: number
+  startedAt: number
+  source?: 'local'
+}
+
+/* everything after the mix WAV exists: separation, storage and the library
+   entry. The caller has already registered the job */
+async function splitMix(
+  job: ActiveJob,
+  options: SplitOptions,
+  picture: 'video' | 'thumbnail',
+  meta: SplitMeta
+): Promise<void> {
+  const { videoId } = job
+  const dir = songDir(videoId)
+  const expected = outputStems(options)
+
+  mkdirSync(stemsDir(videoId), { recursive: true })
+  progress(job, 'separate', 0, 'Waiting for a free engine slot…')
+
+  const release = await acquireSeparation()
+  try {
+    if (!alive(job)) return
+    const gpu = loadSettings().gpuSplit && (await hasGpuAcceleration())
+
+    for (const id of modelsFor(options)) {
+      const { name, sizeMb } = MODELS[id]
+      const ok = await ensureModel(id, (pct) =>
+        progress(job, 'separate', 0, `Downloading ${name} (${sizeMb} MB, one time): ${pct}%`)
+      )
+      if (!alive(job)) return
+      if (!ok) throw new Error(`Could not download ${name}. Check the container's internet access and try again.`)
+    }
+
+    const minutes = meta.duration > 0 ? meta.duration / 60 : 4
+    // ROCm builds of torch answer to 'cuda' too, so this covers AMD cards
+    await separate(job, options, planSteps(options, minutes, gpu), gpu ? 'cuda' : 'cpu')
+    if (!alive(job)) return
+
+    if (!stemsPresent(videoId, expected)) throw new Error('Separation finished but stem files are missing')
+    rmSync(join(dir, 'instrumental.wav'), { force: true })
+    rmSync(join(dir, 'studio-vocals'), { recursive: true, force: true })
+
+    // chords and the drum kit have read the float WAVs by now, so they can
+    // be stored the way the container is set up to keep them
+    if (STEM_FORMAT !== 'wav') {
+      progress(job, 'finalize', 0, 'Compressing stems')
+      await compressSong(videoId, expected)
+    }
+    rmSync(mixWavPath(videoId), { force: true })
+
+    progress(job, 'finalize', 100, 'Adding to library')
+    const songs = upsertSong({
+      videoId,
+      title: meta.title,
+      duration: meta.duration,
+      addedAt: meta.addedAt,
+      model: job.tag,
+      stems: expected,
+      took: Math.round((Date.now() - meta.startedAt) / 1000),
+      options: { ...options, picture },
+      ...(meta.source ? { source: meta.source } : {})
+    })
+    send({ kind: 'done', data: { videoId, song: songs[0] } })
+    // the playback copies are not worth making the split wait for
+    void buildPreviews(videoId, expected)
+  } finally {
+    release()
+  }
+}
+
 export async function startJob(
   rawUrl: string,
   _model?: string,
@@ -437,35 +562,13 @@ export async function startJob(
   // the settings file has
   const picture = options.picture ?? (loadSettings().downloadVideo ? 'video' : 'thumbnail')
   const tag = splitTag(options)
-  const expected = outputStems(options)
   const job: ActiveJob = { videoId, tag, cancelled: false }
   jobs.set(videoId, job)
   const startedAt = Date.now()
 
-  const bail = (message: string): never => {
-    throw new Error(message)
-  }
-
   try {
-    const existing = loadSongs().find((s) => s.videoId === videoId)
-    const covered =
-      !!existing?.options &&
-      splitTag(existing.options) === tag &&
-      expected.every((s) => existing.stems?.includes(s)) &&
-      stemsPresent(videoId, existing.stems ?? [])
-    if (covered && existing) {
-      // same split, but the picture choice may have changed
-      const song =
-        existing.options?.picture === picture
-          ? existing
-          : upsertSong({ ...existing, options: { ...existing.options!, picture } })[0]
-      if (picture === 'video' && !existing.video) void fetchVideo(videoId)
-      send({ kind: 'done', data: { videoId, song } })
-      return
-    }
-    if (existing) rmSync(songDir(videoId), { recursive: true, force: true })
-
-    mkdirSync(songDir(videoId), { recursive: true })
+    const addedAt = loadSongs().find((s) => s.videoId === videoId)?.addedAt ?? Date.now()
+    if (reuseOrPrepare(videoId, tag, outputStems(options), picture)) return
     progress(job, 'metadata', 0, 'Reading video info')
 
     let raw = ''
@@ -483,7 +586,7 @@ export async function startJob(
       }
       void cacheThumbnail(videoId, typeof parsed.thumbnail === 'string' ? parsed.thumbnail : undefined)
     } catch {
-      bail('Could not read video metadata')
+      throw new Error('Could not read video metadata')
     }
     if (!alive(job)) return
     job.title = meta.title
@@ -513,26 +616,10 @@ export async function startJob(
 
     const dir = songDir(videoId)
     const rawFile = readdirSync(dir).find((f) => f.startsWith('raw.'))
-    if (!rawFile) bail('Download produced no file')
-    const rawPath = join(dir, rawFile as string)
+    if (!rawFile) throw new Error('Download produced no file')
+    const rawPath = join(dir, rawFile)
 
-    progress(job, 'convert', 0, 'Converting to WAV')
-    const ffmpeg = getStatus().ffmpeg.path
-    if (!ffmpeg) bail('ffmpeg is missing from the container')
-    await runProcess(job, ffmpeg as string, [
-      '-y',
-      '-i',
-      rawPath,
-      '-af',
-      'aresample=44100:resampler=soxr',
-      '-ar',
-      '44100',
-      '-ac',
-      '2',
-      '-c:a',
-      'pcm_s16le',
-      mixWavPath(videoId)
-    ])
+    await convertToMix(job, rawPath)
     // the download is what gets kept: the WAV made from it is ten times the
     // size and no better, and only has to exist while the split runs
     renameSync(rawPath, join(dir, `source${extname(rawPath)}`))
@@ -542,61 +629,129 @@ export async function startJob(
     // the video downloads in the background: the split does not wait for it
     if (picture === 'video') void fetchVideo(videoId)
 
-    mkdirSync(stemsDir(videoId), { recursive: true })
-    progress(job, 'separate', 0, 'Waiting for a free engine slot…')
+    await splitMix(job, options, picture, { ...meta, addedAt, startedAt })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (message !== 'cancelled') send({ kind: 'failed', data: { videoId, message } })
+  } finally {
+    jobs.delete(videoId)
+  }
+}
 
-    const release = await acquireSeparation()
-    try {
-      if (!alive(job)) return
-      const gpu = loadSettings().gpuSplit && (await hasGpuAcceleration())
+/* ---------- uploaded audio files ---------- */
 
-      for (const id of modelsFor(options)) {
-        const { name, sizeMb } = MODELS[id]
-        const ok = await ensureModel(id, (pct) =>
-          progress(job, 'separate', 0, `Downloading ${name} (${sizeMb} MB, one time): ${pct}%`)
-        )
-        if (!alive(job)) return
-        if (!ok) bail(`Could not download ${name}. Check the container's internet access and try again.`)
-      }
+// an upload is kept under a token of its content hash plus extension, so the
+// same file uploaded twice maps onto the same song
+const UPLOAD_TOKEN = /^([0-9a-f]{16})\.([a-z0-9]{2,5})$/
 
-      const minutes = meta.duration > 0 ? meta.duration / 60 : 4
-      await separate(job, options, planSteps(options, minutes, gpu), gpu ? 'cuda' : 'cpu')
-      if (!alive(job)) return
+export function uploadsDir(): string {
+  return join(userDataDir(), 'uploads')
+}
 
-      if (!stemsPresent(videoId, expected)) bail('Separation finished but stem files are missing')
-      rmSync(join(dir, 'instrumental.wav'), { force: true })
-      rmSync(join(dir, 'studio-vocals'), { recursive: true, force: true })
+/* streams a request body into the uploads folder and returns its token.
+   The original file name goes in a sidecar, for the song title */
+export async function saveUpload(body: AsyncIterable<Buffer>, fileName: string, maxBytes: number): Promise<string> {
+  const ext = extname(fileName).slice(1).toLowerCase()
+  if (!AUDIO_EXTENSIONS.includes(ext)) {
+    throw new Error(`"${ext || 'that file type'}" is not a supported audio format`)
+  }
+  mkdirSync(uploadsDir(), { recursive: true })
+  const partial = join(uploadsDir(), `upload-${process.pid}-${Date.now()}.part`)
+  const hash = createHash('sha256')
+  const out = createWriteStream(partial)
+  let size = 0
+  try {
+    for await (const chunk of body) {
+      size += chunk.length
+      if (size > maxBytes) throw new Error(`The file is over the ${Math.round(maxBytes / 1024 / 1024)} MB upload limit`)
+      hash.update(chunk)
+      if (!out.write(chunk)) await new Promise<void>((resolve) => out.once('drain', () => resolve()))
+    }
+    await new Promise<void>((resolve, reject) => out.end((err?: Error | null) => (err ? reject(err) : resolve())))
+    if (size === 0) throw new Error('The file is empty')
+  } catch (err) {
+    out.destroy()
+    rmSync(partial, { force: true })
+    throw err
+  }
+  const token = `${hash.digest('hex').slice(0, 16)}.${ext}`
+  renameSync(partial, join(uploadsDir(), token))
+  writeFileSync(join(uploadsDir(), `${token}.json`), JSON.stringify({ name: basename(fileName) }))
+  return token
+}
 
-      // chords and the drum kit have read the float WAVs by now, so they can
-      // be stored the way the container is set up to keep them
-      if (STEM_FORMAT !== 'wav') {
-        progress(job, 'finalize', 0, 'Compressing stems')
-        await compressSong(videoId, expected)
-      }
-      rmSync(mixWavPath(videoId), { force: true })
+export async function startLocalJob(
+  rawToken: string,
+  _model?: string,
+  stems?: string[],
+  rawOptions?: unknown
+): Promise<void> {
+  const token = String(rawToken ?? '').trim()
+  const file = join(uploadsDir(), token)
+  if (!UPLOAD_TOKEN.test(token) || !existsSync(file)) {
+    send({ kind: 'failed', data: { videoId: '', message: 'That upload is gone. Upload the file again.' } })
+    return
+  }
 
-      progress(job, 'finalize', 100, 'Adding to library')
-      const songs = upsertSong({
-        videoId,
-        title: meta.title,
-        duration: meta.duration,
-        addedAt: existing?.addedAt ?? Date.now(),
-        model: tag,
-        stems: expected,
-        took: Math.round((Date.now() - startedAt) / 1000),
-        options: { ...options, picture }
-      })
-      send({ kind: 'done', data: { videoId, song: songs[0] } })
-      // the playback copies are not worth making the split wait for
-      void buildPreviews(videoId, expected)
-    } finally {
-      release()
+  const videoId = localSongId(token)
+  if (jobs.has(videoId)) {
+    send({ kind: 'failed', data: { videoId, message: 'This song is already being processed' } })
+    return
+  }
+
+  const options = rawOptions ? normalizeSplit(rawOptions) : legacySplit(stems)
+  // there is no video to download for a file
+  const picture = 'thumbnail'
+  let name = ''
+  try {
+    name = String(JSON.parse(readFileSync(`${file}.json`, 'utf8')).name ?? '')
+  } catch {}
+  const title = name.replace(/\.[^./\\]+$/, '') || 'Uploaded file'
+  // named up front, so progress events show the file while there is no
+  // library entry to read the title from
+  const job: ActiveJob = { videoId, title, tag: splitTag(options), cancelled: false }
+  jobs.set(videoId, job)
+  const startedAt = Date.now()
+
+  try {
+    const addedAt = loadSongs().find((s) => s.videoId === videoId)?.addedAt ?? Date.now()
+    if (reuseOrPrepare(videoId, job.tag, outputStems(options), picture)) {
+      rmSync(file, { force: true })
+      rmSync(`${file}.json`, { force: true })
+      return
+    }
+
+    // no metadata or download stages: ffmpeg reads the upload directly
+    await convertToMix(job, file)
+    if (!alive(job)) return
+    progress(job, 'convert', 100)
+
+    const duration = wavDuration(mixWavPath(videoId))
+    await splitMix(job, options, picture, { title, duration, addedAt, startedAt, source: 'local' })
+    // the upload becomes the song's source, like a YouTube download. Only
+    // now: until the split has worked, Retry needs it where it was
+    if (existsSync(songDir(videoId)) && loadSongs().some((s) => s.videoId === videoId)) {
+      renameSync(file, join(songDir(videoId), `source${extname(file)}`))
+      rmSync(`${file}.json`, { force: true })
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     if (message !== 'cancelled') send({ kind: 'failed', data: { videoId, message } })
   } finally {
     jobs.delete(videoId)
+  }
+}
+
+/* uploads that never became a split (the tab closed, the job failed before
+   it moved the file) are dropped after a day */
+export function pruneUploads(maxAgeMs = 24 * 60 * 60 * 1000): void {
+  if (!existsSync(uploadsDir())) return
+  const cutoff = Date.now() - maxAgeMs
+  for (const f of readdirSync(uploadsDir())) {
+    const path = join(uploadsDir(), f)
+    try {
+      if (statSync(path).mtimeMs < cutoff) rmSync(path, { force: true })
+    } catch {}
   }
 }
 

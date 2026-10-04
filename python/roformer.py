@@ -59,7 +59,8 @@ def crash_message(e):
     """top-level crash handler text: unreadable stderr tails (a bare python
     traceback or an unrelated warnings.warn line) become actionable errors"""
     msg = f"{e}"
-    if "no kernel image" in msg.lower():
+    low = msg.lower()
+    if "no kernel image" in low or "invalid device function" in low:
         return (
             "GPU engine incompatible with this GPU (compute capability not supported by the "
             "installed engine) - update StemKit or turn off GPU acceleration in Settings"
@@ -255,7 +256,7 @@ def main():
 
     # fail fast before the ~913MB checkpoint download on GPU-less machines
     if args.device == "cuda" and not torch.cuda.is_available():
-        fail("GPU engine not available (no NVIDIA GPU, or the CUDA build of torch is not installed)")
+        fail("GPU engine not available (no supported NVIDIA/AMD GPU, or the GPU build of torch is not installed)")
 
     ckpt_path = os.path.join(args.ckpt_dir, CKPT_NAME)
     if not os.path.exists(ckpt_path):

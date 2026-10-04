@@ -25,7 +25,13 @@ if [ "$(id -u)" = "0" ] && [ "$PUID" != "0" ]; then
   # shellcheck disable=SC2086
   find $OWNED \( ! -user "$PUID" -o ! -group "$PGID" \) \
     -exec chown "$PUID:$PGID" {} + 2>/dev/null || true
-  exec setpriv --reuid="$PUID" --regid="$PGID" --clear-groups \
+  # an AMD card is reached through /dev/kfd and /dev/dri/renderD*, which
+  # belong to the host's render and video groups. Those groups are kept, or
+  # the ROCm build cannot open the GPU once root is dropped
+  GROUPS_ARG="--clear-groups"
+  DEV_GIDS="$(stat -c %g /dev/kfd /dev/dri/renderD* 2>/dev/null | sort -u | paste -sd, -)"
+  [ -n "$DEV_GIDS" ] && GROUPS_ARG="--groups=$DEV_GIDS"
+  exec setpriv --reuid="$PUID" --regid="$PGID" "$GROUPS_ARG" \
     node /app/out/server/index.js
 fi
 

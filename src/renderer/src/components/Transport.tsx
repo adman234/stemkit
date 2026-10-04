@@ -22,7 +22,8 @@ interface Props {
   onPreset: (p: PresetId) => void
   master: number
   onMaster: (v: number) => void
-  youtubeUrl: string
+  // local-file songs have no video to link out to
+  youtubeUrl?: string
 }
 
 function SeekBar({
@@ -147,9 +148,9 @@ export function Transport({
           className="no-drag w-11 h-11 rounded-full bg-white text-black flex items-center justify-center hover:scale-105 active:scale-95 transition-transform shadow-lg shadow-violet-500/20 disabled:opacity-40 disabled:hover:scale-100"
         >
           {playing ? (
-            <PauseIcon className="w-5 h-5 translate-x-px" />
+            <PauseIcon className="w-5 h-5" />
           ) : (
-            <PlayIcon className="w-5 h-5 translate-x-0.5" />
+            <PlayIcon className="w-5 h-5 -translate-x-px" />
           )}
         </button>
 
@@ -188,13 +189,15 @@ export function Transport({
           />
         </div>
 
-        <button
-          onClick={() => window.stemkit.openExternal(youtubeUrl)}
-          title="Open on YouTube"
-          className="no-drag text-white/40 hover:text-white transition-colors"
-        >
-          <ExternalIcon />
-        </button>
+        {youtubeUrl && (
+          <button
+            onClick={() => window.stemkit.openExternal(youtubeUrl)}
+            title="Open on YouTube"
+            className="no-drag text-white/40 hover:text-white transition-colors"
+          >
+            <ExternalIcon />
+          </button>
+        )}
       </div>
     </div>
   )

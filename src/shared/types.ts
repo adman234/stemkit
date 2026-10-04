@@ -72,6 +72,10 @@ export interface ModelStatus {
   pct?: number
 }
 
+// which GPU vendor GPU acceleration targets: NVIDIA via CUDA torch (windows
+// + linux), AMD via ROCm torch (linux only)
+export type GpuVendor = 'nvidia' | 'amd'
+
 export const DEFAULT_STEMS: string[] = ['vocals', 'drums', 'bass', 'other']
 
 // roformer_hybrid = mel-band roformer vocals + htdemucs drums/bass/other
@@ -95,6 +99,8 @@ export interface Song {
   // web version: when the stems were last loaded for playing, which is what
   // STEMKIT_KEEP_DAYS measures a song's age from
   lastPlayedAt?: number
+  // local audio files carry their own mix; absent means a YouTube source
+  source?: 'local'
 }
 
 // web version: progress of a video download
@@ -117,9 +123,10 @@ export interface AppSettings {
   shifts: 1 | 2
   htdemucsFt: boolean
   roformerVocals: boolean
-  // windows/linux + nvidia: separate on the GPU instead of the CPU. The toggle is
-  // only rendered when an NVIDIA GPU is detected; enabling it downloads the
-  // CUDA build of torch (~2.5GB) on first use
+  // windows/linux: separate on the GPU instead of the CPU. The toggle is only
+  // rendered when an NVIDIA GPU (cuda torch) or an AMD GPU on linux (rocm
+  // torch) is detected; enabling it downloads the ~2.5GB GPU build of torch
+  // on first use
   gpuSplit: boolean
   // web version: also download the video with each split, so playback runs
   // from the server instead of streaming from YouTube
@@ -131,6 +138,13 @@ export interface AppSettings {
   // which set of defaults this file was written against, so a change to them
   // reaches an install that already has a settings file
   rev?: number
+  // hide the YouTube video while playing: stems are always played locally,
+  // this stops streaming the video and falls back to cached thumbnails
+  hideVideo: boolean
+  // format used when exporting stems: wav is the lossless source format,
+  // aac (.m4a) is transcoded on export via the bundled ffmpeg. mp3 isn't an
+  // option — the bundled ffmpeg is a minimal static build without libmp3lame
+  exportFormat: 'wav' | 'aac'
 }
 
 export const SETTINGS_REV = 2
@@ -143,6 +157,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   downloadVideo: true,
   videoHeight: 720,
   pauseWhenHidden: true,
+  hideVideo: false,
+  exportFormat: 'wav',
   rev: SETTINGS_REV
 }
 
@@ -153,7 +169,7 @@ export interface EngineStatus {
   vocalsReady: boolean
   ftDownloading: boolean
   ftVerified: boolean
-  // cuda torch engine (windows/linux + nvidia only)
+  // gpu torch engine (windows/linux; cuda for nvidia, rocm for amd on linux)
   gpuDownloading: boolean
   gpuReady: boolean
   // web version: optional model checkpoints and their download state
@@ -167,8 +183,9 @@ export interface EnvStatus {
   bootstrapping: boolean
   updating: boolean
   gpu?: boolean
-  // windows/linux only: an NVIDIA GPU was detected (gates the GPU toggle in Settings)
-  nvidiaGpu?: boolean
+  // windows/linux only: which GPU vendor was detected (gates the GPU toggle
+  // in Settings; amd is only detected on linux)
+  gpuVendor?: GpuVendor
 }
 
 export interface EnvEvent {
@@ -237,6 +254,15 @@ export interface StemKitApi {
   // options is only understood by the web server; the desktop app ignores it
   startJob(
     url: string,
+    model?: string,
+    stems?: string[],
+    options?: SplitOptions
+  ): Promise<{ started: boolean }>
+  // desktop: a path from the file dialog. Web: the browser uploads the file
+  // and gets back a token that startLocalJob takes in place of the path
+  pickAudioFile(): Promise<string | null>
+  startLocalJob(
+    filePath: string,
     model?: string,
     stems?: string[],
     options?: SplitOptions

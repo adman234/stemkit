@@ -1,9 +1,9 @@
 import { spawn, execFile } from 'child_process'
-import { existsSync, writeFileSync, readdirSync, createWriteStream, mkdirSync, chmodSync, unlinkSync, statSync, renameSync } from 'fs'
+import { existsSync, writeFileSync, readdirSync, readFileSync, createWriteStream, mkdirSync, chmodSync, unlinkSync, statSync, renameSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { app, BrowserWindow, net } from 'electron'
-import type { EngineStatus } from '../shared/types'
+import type { EngineStatus, GpuVendor } from '../shared/types'
 
 export interface ToolInfo {
   found: boolean
@@ -36,8 +36,9 @@ const IS_WIN = process.platform === 'win32'
 const EXE = IS_WIN ? '.exe' : ''
 const VENV_BIN = IS_WIN ? 'Scripts' : 'bin'
 
-/* CUDA torch (the GPU engine swap) works on windows and linux; macOS stays
-   on MPS/CPU via the default torch build */
+/* CUDA torch (the NVIDIA GPU engine swap) works on windows and linux; ROCm
+   torch (AMD) is linux-only. macOS stays on MPS/CPU via the default torch
+   build */
 const SUPPORTS_GPU = IS_WIN || process.platform === 'linux'
 
 export function venvDir(): string {
@@ -164,13 +165,12 @@ export function gpuAccelerationInfo(): boolean | undefined {
 }
 
 let nvidiaProbe: Promise<boolean> | null = null
-let nvidiaInfo: boolean | undefined
 
 /* windows + linux: whether an NVIDIA GPU is present (nvidia-smi ships with
-   the driver). Gates the GPU-acceleration toggle in Settings */
+   the driver). Part of the vendor detection that gates the GPU-acceleration
+   toggle in Settings */
 export function detectNvidiaGpu(): Promise<boolean> {
   if (!SUPPORTS_GPU) {
-    nvidiaInfo = false
     return Promise.resolve(false)
   }
   if (!nvidiaProbe) {
@@ -179,20 +179,108 @@ export function detectNvidiaGpu(): Promise<boolean> {
       ['--query-gpu=name,memory.total', '--format=csv,noheader'],
       10000
     )
-      .then((out) => {
-        nvidiaInfo = /nvidia/i.test(out)
-        return nvidiaInfo
-      })
-      .catch(() => {
-        nvidiaInfo = false
-        return false
-      })
+      .then((out) => /nvidia/i.test(out))
+      .catch(() => false)
   }
   return nvidiaProbe
 }
 
-export function nvidiaGpuInfo(): boolean | undefined {
-  return nvidiaInfo
+let amdProbe: Promise<boolean> | null = null
+
+/* linux only: whether an AMD GPU is present. sysfs needs no tools and works
+   inside the AppImage (unlike lspci/rocminfo); 0x1002 is the AMD/ATI vendor
+   id. Not a support statement — the compute preflight in ensureGpuEngine
+   decides whether the ROCm torch can actually run on the card */
+export function detectAmdGpu(): Promise<boolean> {
+  if (process.platform !== 'linux') {
+    return Promise.resolve(false)
+  }
+  if (!amdProbe) {
+    amdProbe = (async () => {
+      try {
+        for (const entry of readdirSync('/sys/class/drm')) {
+          if (!/^card\d+$/.test(entry)) continue
+          try {
+            const vendor = readFileSync(join('/sys/class/drm', entry, 'device', 'vendor'), 'utf8')
+            if (vendor.trim() === '0x1002') return true
+          } catch {}
+        }
+      } catch {}
+      return false
+    })()
+  }
+  return amdProbe
+}
+
+let vendorProbe: Promise<GpuVendor | null> | null = null
+let vendorInfo: GpuVendor | null | undefined
+
+/* which vendor GPU acceleration should target; NVIDIA wins when both are
+   present (the CUDA path is better supported than ROCm) */
+export function detectGpuVendor(): Promise<GpuVendor | null> {
+  if (!vendorProbe) {
+    vendorProbe = (async () => {
+      const vendor = (await detectNvidiaGpu()) ? 'nvidia' : (await detectAmdGpu()) ? 'amd' : null
+      vendorInfo = vendor
+      return vendor
+    })()
+  }
+  return vendorProbe
+}
+
+export function gpuVendorInfo(): GpuVendor | null | undefined {
+  return vendorInfo
+}
+
+let nvidiaCapProbe: Promise<string | null> | null = null
+
+/* NVIDIA compute capability, e.g. "12.0" for an RTX 5090 (sm_120). Exposed by
+   nvidia-smi on driver 450+; null when absent or unreadable */
+export function detectNvidiaComputeCap(): Promise<string | null> {
+  if (!SUPPORTS_GPU) return Promise.resolve(null)
+  if (!nvidiaCapProbe) {
+    nvidiaCapProbe = runCapture(
+      'nvidia-smi',
+      ['--query-gpu=compute_cap', '--format=csv,noheader'],
+      10000
+    )
+      .then((out) => {
+        const m = out.match(/(\d+)\.(\d+)/)
+        return m ? `${m[1]}.${m[2]}` : null
+      })
+      .catch(() => null)
+  }
+  return nvidiaCapProbe
+}
+
+/* the torch build's CUDA runtime version, e.g. "12.1"; empty when unset or
+   the venv has no torch */
+async function torchCudaVersion(): Promise<string> {
+  return (
+    await runCapture(
+      venvPython(),
+      ['-c', 'import torch;print(torch.version.cuda or "")'],
+      30000
+    ).catch(() => '')
+  ).trim()
+}
+
+function cudaVersionAtLeast(v: string, maj: number, min: number): boolean {
+  const m = v.match(/(\d+)\.(\d+)/)
+  if (!m) return false
+  return parseInt(m[1], 10) * 100 + parseInt(m[2], 10) >= maj * 100 + min
+}
+
+/* the torch build's HIP runtime version (rocm wheels only), e.g. "6.2.41133";
+   empty on cpu/cuda builds or when the venv has no torch */
+async function torchHipVersion(): Promise<string> {
+  return (
+    await runCapture(
+      venvPython(),
+      ['-c', 'import torch;print(torch.version.hip or "")'],
+      30000
+    ).catch(() => '')
+  ).trim()
 }
 
 /* venvs created before the roformer engine lack a few small packages;
@@ -458,19 +546,22 @@ export async function detectTools(): Promise<void> {
     state.python = { found: true, path: best.path, version: best.version }
   }
 
+  // probe the bundled ffmpeg just like system candidates: a bundled binary
+  // that can't execute on this machine (e.g. a stale x86_64 build on an
+  // Apple Silicon Mac without Rosetta — exec fails with errno -86) must
+  // fall through to a system install instead of blowing up mid-job
+  const ffProbes: string[] = []
   const bundled = bundledFfmpeg()
-  if (bundled) {
-    state.ffmpeg = { found: true, path: bundled }
-  } else {
-    for (const candidate of ffCandidates()) {
-      if (!existsSync(candidate)) continue
-      try {
-        await runCapture(candidate, ['-version'])
-        state.ffmpeg = { found: true, path: candidate }
-        break
-      } catch {
-        continue
-      }
+  if (bundled) ffProbes.push(bundled)
+  ffProbes.push(...ffCandidates())
+  for (const candidate of ffProbes) {
+    if (!existsSync(candidate)) continue
+    try {
+      await runCapture(candidate, ['-version'])
+      state.ffmpeg = { found: true, path: candidate }
+      break
+    } catch {
+      continue
     }
   }
 
@@ -702,21 +793,76 @@ export function ensureFtWeights(onProgress?: (pct: number) => void): Promise<boo
   return ftWeightsPromise.then(detach)
 }
 
-/* CUDA build of torch (windows/linux + nvidia). The default bootstrap
-   installs the CPU wheel from PyPI (on linux pinned to the cpu index, since
-   the default linux wheel would otherwise pull CUDA deps for everyone);
-   this swaps in the cu121 build (~2.5GB download) on demand when the
-   GPU-acceleration toggle is enabled. It stays installed when the toggle
-   goes back off — CUDA torch handles cpu devices fine */
+/* GPU builds of torch. The default bootstrap installs the CPU wheel (on
+   linux pinned to the cpu index, since the default linux wheel would
+   otherwise pull CUDA deps for everyone); these swap in on demand when the
+   GPU-acceleration toggle is enabled — cu121 for NVIDIA (~2.5GB download),
+   rocm6.4 for AMD on linux (~3GB). They stay installed when the toggle goes
+   back off — GPU torch handles cpu devices fine */
 const GPU_TORCH_VERSION = '2.5.1'
-const GPU_TORCH_INDEX = 'https://download.pytorch.org/whl/cu121'
+const GPU_TORCH_INDEX: Record<GpuVendor, string> = {
+  nvidia: 'https://download.pytorch.org/whl/cu121',
+  amd: 'https://download.pytorch.org/whl/rocm6.4'
+}
+const AMD_TORCH_VERSION = '2.8.0'
+
+/* PyTorch stopped shipping macOS x86_64 wheels after 2.2.2 — every later
+   release is arm64-only on mac, so an Intel Mac sees a version list that
+   dead-ends at 2.2.2 and `torch==2.5.1` fails with "no matching
+   distribution". 2.2.2 is the last one that installs there, and it still
+   covers the bundled runtime's python (3.11 cp311 macosx_10_9_x86_64). */
+const CPU_TORCH_VERSION =
+  process.platform === 'darwin' && process.arch !== 'arm64' ? '2.2.2' : '2.5.1'
+
+/* official rocm wheels ship kernel images for a subset of targets; consumer
+   RDNA2/3 parts (RX 6600 = gfx1032, 7600 = gfx1102, 680M iGPU = gfx1035, …)
+   need HSA_OVERRIDE_GFX_VERSION to run the nearest code object. RDNA4
+   (gfx1200/1201) is officially supported since rocm 6.4 — the reason the AMD
+   engine pins 2.8.0+rocm6.4: on 6.2 wheels an RX 9070 XT dies at first
+   launch with "invalid device function" and no override can rescue it. The
+   compute preflight below validates the result — if the wheels still can't
+   serve the card, the CPU path stays in charge */
+function gfxOverride(gfx: string): string | null {
+  const id = parseInt((gfx.match(/gfx(\d+)/) ?? [])[1] ?? '', 10)
+  if (Number.isNaN(id)) return null
+  if (id >= 1010 && id <= 1039) return '10.3.0'
+  if (id >= 1101 && id <= 1103) return '11.0.0'
+  return null
+}
+
+/* RTX 50-series and newer (compute capability 12.0/10.0) have no kernels in
+   cu121 torch — first launch dies with "no kernel image is available". The
+   cu128 build of torch 2.7.0 ships sm_100/120 kernels; every older NVIDIA
+   card stays on the long-tested 2.5.1 cu121 engine. torch 2.7 needs the
+   torch.load shim in separate.py (demucs ships pre-2.6 checkpoints) */
+const BLACKWELL_TORCH_VERSION = '2.7.0'
+const BLACKWELL_TORCH_INDEX = 'https://download.pytorch.org/whl/cu128'
+
+/* the HSA override computed by the AMD preflight must survive restarts: the
+   informational gpu probe (torch.cuda.is_available) passes without it, so a
+   fresh session would otherwise skip the preflight and ship an override-less
+   env to the separation runs */
+function gpuOverrideFile(): string {
+  return join(userDataDir(), '.gpu-override')
+}
+
+export function applyGpuOverride(): void {
+  try {
+    const saved = readFileSync(gpuOverrideFile(), 'utf8').trim()
+    if (/^\d+\.\d+\.\d+$/.test(saved)) process.env.HSA_OVERRIDE_GFX_VERSION = saved
+  } catch {}
+}
 
 let gpuEnginePromise: Promise<boolean> | null = null
 const gpuProgressListeners = new Set<(pct: number) => void>()
 
+/* requireVendor (with force off): only proceed when that vendor is the one
+   detected on this machine. force (smoke test): install the named wheels
+   regardless of detection */
 export function ensureGpuEngine(
   onProgress?: (pct: number) => void,
-  requireNvidia = false
+  requireVendor?: GpuVendor | null,
+  force = false
 ): Promise<boolean> {
   if (onProgress) gpuProgressListeners.add(onProgress)
   const detach = (): boolean => {
@@ -729,13 +875,47 @@ export function ensureGpuEngine(
   }
   if (!gpuEnginePromise) {
     gpuEnginePromise = (async () => {
-      // already swapped in: the venv's torch speaks CUDA, nothing to install
-      if (await hasGpuAcceleration()) return true
-      // the Settings toggle is gated on NVIDIA detection, but a stale setting
-      // or a failed nvidia-smi probe could still land here — don't pull
-      // ~2.5GB of CUDA torch on a machine that can't use it
-      if (requireNvidia && !(await detectNvidiaGpu())) return false
-      sendEnvEvent('Downloading the GPU engine (~2.5GB, one time)')
+      // the Settings toggle is only rendered when a GPU was detected, but a
+      // stale setting or a failed probe could still land here — don't pull
+      // ~2.5GB of GPU torch on a machine that can't use it
+      const detected = await detectGpuVendor()
+      if (!force) {
+        if (!detected) return false
+        if (requireVendor && detected !== requireVendor) return false
+      }
+      const vendor: GpuVendor = force
+        ? (requireVendor ?? detected ?? 'nvidia')
+        : (detected ?? 'nvidia')
+      // no ROCm wheels for windows: an AMD card there stays on CPU
+      if (vendor === 'amd' && IS_WIN) return false
+      const label = vendor === 'amd' ? 'AMD' : 'NVIDIA'
+      // wheel selection: Blackwell-class NVIDIA cards (compute cap 10+)
+      // need the cu128 build; anything already installed from cu121 must be
+      // upgraded to it. Without this, the early-return below would leave the
+      // older engine in place and separation would die mid-split. Same story
+      // for AMD: the 2.8.0+rocm6.4 engine is required for RDNA4 (RX 9070 XT
+      // = gfx1201 has no kernels — and no override — on 6.2 wheels), so
+      // machines holding an older rocm engine must be upgraded too
+      let torchVersion = GPU_TORCH_VERSION
+      let torchIndex = GPU_TORCH_INDEX[vendor]
+      let sizeLabel = '~2.5GB'
+      let needUpgrade = false
+      if (vendor === 'nvidia') {
+        const capMajor = parseInt(((await detectNvidiaComputeCap()) ?? '').split('.')[0], 10)
+        if (!Number.isNaN(capMajor) && capMajor >= 10) {
+          torchVersion = BLACKWELL_TORCH_VERSION
+          torchIndex = BLACKWELL_TORCH_INDEX
+          sizeLabel = '~3GB'
+          needUpgrade = !cudaVersionAtLeast(await torchCudaVersion(), 12, 8)
+        }
+      } else {
+        torchVersion = AMD_TORCH_VERSION
+        sizeLabel = '~3GB'
+        needUpgrade = !cudaVersionAtLeast(await torchHipVersion(), 6, 4)
+      }
+      // already swapped in: the venv's torch speaks to a GPU, nothing to install
+      if (!needUpgrade && (await hasGpuAcceleration())) return true
+      sendEnvEvent(`Downloading the ${label} GPU engine (${sizeLabel}, one time)`)
       await new Promise<void>((resolve, reject) => {
         const child = spawn(
           venvPython(),
@@ -745,13 +925,13 @@ export function ensureGpuEngine(
             'install',
             // required: the CPU torch from bootstrap already satisfies the
             // version spec, so without -U pip would no-op and never swap in
-            // the cuda build
+            // the gpu build
             '-U',
             '--no-cache-dir',
-            `torch==${GPU_TORCH_VERSION}`,
-            `torchaudio==${GPU_TORCH_VERSION}`,
+            `torch==${torchVersion}`,
+            `torchaudio==${torchVersion}`,
             '--index-url',
-            GPU_TORCH_INDEX
+            torchIndex
           ],
           { env: { ...process.env } }
         )
@@ -785,22 +965,81 @@ export function ensureGpuEngine(
           )
         })
       })
-      // verify the swap actually took effect: torch must report a cuda build
-      // (torch.version.cuda is set by the wheel itself, independent of whether
-      // an NVIDIA driver/GPU is present on this machine)
+      // verify the swap actually took effect: torch must report the expected
+      // build (torch.version.cuda for cu121, torch.version.hip for rocm —
+      // set by the wheel itself, independent of whether a working
+      // driver/GPU is present on this machine)
       const swapped = await runCapture(
         venvPython(),
-        ['-c', 'import torch;print(1 if torch.version.cuda else 0)'],
+        [
+          '-c',
+          vendor === 'amd'
+            ? 'import torch;print(1 if torch.version.hip else 0)'
+            : 'import torch;print(1 if torch.version.cuda else 0)'
+        ],
         30000
       ).catch(() => '0')
       if (!swapped.trim().startsWith('1')) {
-        throw new Error('cuda torch is not active after install (torch.version.cuda unset)')
+        throw new Error(
+          vendor === 'amd'
+            ? 'rocm torch is not active after install (torch.version.hip unset)'
+            : 'cuda torch is not active after install (torch.version.cuda unset)'
+        )
       }
-      // refresh the cached cuda probe so Settings' status lines update
+      if (vendor === 'amd') {
+        // consumer RDNA cards are not official wheel targets; probe the gfx
+        // target, apply the HSA override when needed, then prove the GPU
+        // with a real compute op before declaring the engine ready — a
+        // missing kernel image would otherwise surface mid-separation as a
+        // cryptic HIP error
+        const gfxOut = await runCapture(
+          venvPython(),
+          [
+            '-c',
+            'import torch;p=torch.cuda.get_device_properties(0);print(getattr(p,"gcnArchName","") or "gfx%d%02d" % (p.major, p.minor))'
+          ],
+          30000
+        ).catch(() => '')
+        const override = gfxOverride(gfxOut)
+        if (override) {
+          // every python spawn inherits process.env, so one assignment
+          // covers the separation runs too; persist it for future launches
+          process.env.HSA_OVERRIDE_GFX_VERSION = override
+          try {
+            writeFileSync(gpuOverrideFile(), override)
+          } catch {}
+        } else {
+          // stale override from an earlier card/engine would shadow the
+          // officially supported target
+          try {
+            unlinkSync(gpuOverrideFile())
+          } catch {}
+        }
+        try {
+          const ok = await runCapture(
+            venvPython(),
+            ['-c', 'import torch;torch.randn(256,256,device="cuda").sum().item();print("ok")'],
+            60000
+          )
+          if (!ok.trim().includes('ok')) throw new Error('compute probe returned no result')
+        } catch (err) {
+          const raw = err instanceof Error ? err.message : String(err)
+          // "invalid device function" = no kernel image for this gfx target —
+          // not a driver/permission problem, so the generic advice would
+          // mislead; point at the engine instead
+          const advice = /invalid device function|no kernel image/i.test(raw)
+            ? 'This GPU architecture has no kernels in the installed ROCm engine — update StemKit.'
+            : 'Check the amdgpu driver and that your user can access /dev/kfd and /dev/dri.'
+          throw new Error(
+            `AMD GPU probe failed${override ? ` (using ${override})` : ''}: ${raw.slice(-300)}. ${advice}`
+          )
+        }
+      }
+      // refresh the cached gpu probe so Settings' status lines update
       gpuProbe = null
       gpuInfo = undefined
       void hasGpuAcceleration()
-      sendEnvEvent('GPU engine ready', 'success')
+      sendEnvEvent(`${label} GPU engine ready`, 'success')
       return true
     })()
       .catch((err) => {
@@ -980,8 +1219,8 @@ export async function bootstrap(): Promise<boolean> {
           'install',
           '--progress-bar',
           'off',
-          'torch==2.5.1',
-          'torchaudio==2.5.1',
+          `torch==${CPU_TORCH_VERSION}`,
+          `torchaudio==${CPU_TORCH_VERSION}`,
           '--index-url',
           'https://download.pytorch.org/whl/cpu'
         ])
@@ -1004,8 +1243,8 @@ export async function bootstrap(): Promise<boolean> {
         '--progress-bar',
         'off',
         'demucs==4.0.1',
-         'torch==2.5.1',
-        'torchaudio==2.5.1',
+        `torch==${CPU_TORCH_VERSION}`,
+        `torchaudio==${CPU_TORCH_VERSION}`,
         'numpy<2',
         'beartype',
         'rotary-embedding-torch',

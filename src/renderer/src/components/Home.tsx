@@ -4,7 +4,7 @@ import { DEFAULT_SPLIT, engineInfo, ENGINES, estimateSeconds, fmtEstimate, INSTR
 import { parseVideoId } from '../../../shared/url'
 import { STEM_INFO } from '../lib/stems'
 import { fmtTime } from '../lib/format'
-import { GearIcon } from './Icons'
+import { GearIcon, FolderIcon } from './Icons'
 
 interface Props {
   songs: Song[]
@@ -12,6 +12,8 @@ interface Props {
   // splits run on the GPU (drives the time estimates)
   gpu: boolean
   onStart: (url: string, options: SplitOptions) => void
+  // filePath is the upload token in the web version
+  onStartLocal: (filePath: string, options: SplitOptions) => void
   onSelect: (videoId: string) => void
   onOpenSettings: () => void
 }
@@ -72,7 +74,15 @@ function SectionLabel({ children }: { children: React.ReactNode }): React.ReactE
   return <span className="text-[11px] font-semibold uppercase tracking-widest text-white/30">{children}</span>
 }
 
-export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettings }: Props): React.ReactElement {
+export function Home({
+  songs,
+  pending = {},
+  gpu,
+  onStart,
+  onStartLocal,
+  onSelect,
+  onOpenSettings
+}: Props): React.ReactElement {
   const [query, setQuery] = useState('')
   const [split, setSplitState] = useState<SplitOptions>(loadSplit)
   const [models, setModels] = useState<ModelStatus[]>([])
@@ -126,6 +136,22 @@ export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettin
     )
   }
 
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const pickAndStart = async (): Promise<void> => {
+    if (!hasStems || uploading) return
+    setUploading(true)
+    setUploadError(null)
+    try {
+      const filePath = await window.stemkit.pickAudioFile()
+      if (filePath) onStartLocal(filePath, effective)
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setUploading(false)
+    }
+  }
+
   useEffect(() => {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current)
@@ -144,7 +170,7 @@ export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettin
       }
     } catch (err) {
       if (seqRef.current === seq) {
-        setSearchError(err instanceof Error ? err.message : String(err))
+        setUploadError(err instanceof Error ? err.message : String(err))
         setResults([])
       }
     } finally {
@@ -182,10 +208,10 @@ export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettin
     <div className="h-full flex flex-col items-center px-3 md:px-8 pt-6 md:pt-[6vh] pb-6 overflow-y-auto">
       <div className="w-full max-w-2xl xl:max-w-4xl">
         <h1 className="text-center text-[22px] md:text-[30px] font-bold tracking-tight leading-tight bg-gradient-to-r from-violet-300 via-white to-emerald-200 bg-clip-text text-transparent">
-          Turn any YouTube track into stems.
+          Turn any track into stems.
         </h1>
         <p className="text-center text-white/45 mt-2.5 text-[14px]">
-          Search YouTube or paste a link, then pick an engine and the instruments you want.
+          Search YouTube, paste a link or upload an audio file, then pick an engine and the instruments you want.
         </p>
 
         <div className="mt-6 flex gap-2">
@@ -201,6 +227,19 @@ export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettin
             className="no-drag flex-1 glass rounded-xl px-4 py-3 text-sm outline-none placeholder:text-white/25 focus:ring-2 focus:ring-violet-400/60 transition-shadow"
           />
           <button
+            onClick={() => void pickAndStart()}
+            disabled={!hasStems || uploading}
+            title="Split an audio file (mp3, wav, flac…)"
+            aria-label="Upload an audio file"
+            className="no-drag glass rounded-xl w-[46px] md:w-[52px] shrink-0 flex items-center justify-center text-white/45 hover:text-white hover:bg-white/10 transition-colors disabled:opacity-40"
+          >
+            {uploading ? (
+              <span className="w-4 h-4 rounded-full border-2 border-white/20 border-t-violet-300 animate-spin" />
+            ) : (
+              <FolderIcon className="w-[18px] h-[18px] pointer-events-none" />
+            )}
+          </button>
+          <button
             onClick={submit}
             disabled={!query.trim() || !hasStems}
             className="no-drag px-5 rounded-xl bg-white text-black text-sm font-semibold hover:bg-white/90 active:scale-[0.98] transition-all disabled:opacity-40 disabled:hover:bg-white disabled:active:scale-100"
@@ -208,6 +247,7 @@ export function Home({ songs, pending = {}, gpu, onStart, onSelect, onOpenSettin
             {parseVideoId(query) ? 'Split' : 'Search'}
           </button>
         </div>
+        {uploadError && <p className="mt-2 text-[12px] text-rose-300 break-words">Upload failed: {uploadError}</p>}
 
         <div className="mt-3.5 glass rounded-2xl px-4 py-3.5 space-y-4">
           <div>
