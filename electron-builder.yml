@@ -17,13 +17,18 @@ extraResources:
 mac:
   category: public.app-category.music
   icon: build/icon.png
+  # both slices: the bundled ffmpeg is universal (see scripts/fetch-ffmpeg.sh),
+  # so the x64 dmg carries a working Intel binary even though CI only has
+  # arm64 macOS runners to build it on
   target:
     - target: dmg
       arch:
         - arm64
+        - x64
     - target: zip
       arch:
         - arm64
+        - x64
   extraResources:
     - from: extras/ffmpeg-mac/ffmpeg
       to: ffmpeg/ffmpeg

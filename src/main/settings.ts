@@ -57,6 +57,8 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
       ? Number(merged.videoHeight)
       : DEFAULT_SETTINGS.videoHeight,
     pauseWhenHidden: merged.pauseWhenHidden !== false,
+    hideVideo: !!merged.hideVideo,
+    exportFormat: merged.exportFormat === 'aac' ? 'aac' : 'wav',
     rev: SETTINGS_REV
   }
   writeFileSync(settingsFile(), JSON.stringify(next, null, 2))

@@ -138,6 +138,13 @@ export interface AppSettings {
   // which set of defaults this file was written against, so a change to them
   // reaches an install that already has a settings file
   rev?: number
+  // hide the YouTube video while playing: stems are always played locally,
+  // this stops streaming the video and falls back to cached thumbnails
+  hideVideo: boolean
+  // format used when exporting stems: wav is the lossless source format,
+  // aac (.m4a) is transcoded on export via the bundled ffmpeg. mp3 isn't an
+  // option — the bundled ffmpeg is a minimal static build without libmp3lame
+  exportFormat: 'wav' | 'aac'
 }
 
 export const SETTINGS_REV = 2
@@ -150,6 +157,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   downloadVideo: true,
   videoHeight: 720,
   pauseWhenHidden: true,
+  hideVideo: false,
+  exportFormat: 'wav',
   rev: SETTINGS_REV
 }
 
