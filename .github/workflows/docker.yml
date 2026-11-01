@@ -14,6 +14,11 @@ on:
       - 'docs/**'
       - 'website/**'
       - 'telemetry-worker/**'
+  # Weekly rebuild so :latest picks up security fixes in the python/node base
+  # images. Layers come from the registry cache, so if the base images haven't
+  # changed nothing is re-downloaded by Unraid.
+  schedule:
+    - cron: '14 5 * * 2'
   workflow_dispatch:
 
 permissions:
@@ -21,7 +26,7 @@ permissions:
   packages: write
 
 concurrency:
-  group: docker-${{ github.ref }}
+  group: docker-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 jobs:
@@ -73,3 +78,7 @@ jobs:
             GPU=${{ matrix.gpu }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Keeps unchanged layers byte-identical between builds, so users only
+          # re-download layers that actually changed. One cache per GPU flavour.
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.gpu }}
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.gpu }},mode=max,image-manifest=true,oci-mediatypes=true

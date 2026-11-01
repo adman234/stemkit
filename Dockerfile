@@ -24,6 +24,8 @@ FROM python:3.11-slim-bookworm
 # GPU=rocm: torch 2.8 with ROCm 6.4 for AMD cards on a Linux host, RDNA4
 # (RX 9070) included. Experimental, as it is upstream
 ARG GPU=cuda
+# torchaudio is installed at the same version as torch
+# renovate: datasource=pypi depName=torch
 ARG TORCH_VERSION=2.8.0
 # overrides the index GPU picks
 ARG TORCH_INDEX_URL=""

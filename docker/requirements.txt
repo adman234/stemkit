@@ -1,18 +1,19 @@
 # Python engine for the web/Docker build. torch and torchaudio are installed
 # first from the PyTorch CUDA index (see Dockerfile), so pip keeps them.
+# Exact versions (except yt-dlp, below) so a rebuild installs the same set; Renovate proposes updates.
 demucs==4.0.1
 numpy==1.26.4
 beartype==0.22.9
 einops==0.8.2
 rotary-embedding-torch==0.9.1
 # imported by the vendored roformer attention module
-packaging
+packaging==26.3
 # model configs for msst.py (demucs pulls it in too)
-pyyaml
+pyyaml==6.0.3
 # CQT and beat tracking for chords.py
-librosa>=0.10,<1
+librosa==0.11.0
 # runs the Basic Pitch note model for notes.py (CPU; the model is tiny)
-onnxruntime>=1.20,<2
+onnxruntime==1.31.1
 # unpinned on purpose: YouTube breaks old releases, and the container also
 # refreshes these on start (YTDLP_AUTO_UPDATE)
 yt-dlp
