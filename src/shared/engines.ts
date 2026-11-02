@@ -126,8 +126,7 @@ export const DEFAULT_SPLIT: SplitOptions = {
   studioVocals: false,
   secondPass: false,
   drumKit: false,
-  chords: true,
-  picture: 'video'
+  chords: true
 }
 
 /* validates options from a client (or localStorage) into a usable shape */

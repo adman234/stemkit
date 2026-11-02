@@ -424,6 +424,13 @@ const jobs = new Map<string, ActiveJob>()
 
 const MAX_CONCURRENT_SEPARATIONS = Math.max(1, Number(process.env.STEMKIT_MAX_JOBS ?? 2) || 2)
 let activeSeparations = 0
+
+/* What a split shows beside the stems when the client does not say: the
+   cover image, unless STEMKIT_PICTURE=video. The video costs a download and
+   disk for every song, and most splits are listened to, not watched. */
+export const DEFAULT_PICTURE: 'video' | 'thumbnail' = /^video$/i.test((process.env.STEMKIT_PICTURE ?? '').trim())
+  ? 'video'
+  : 'thumbnail'
 const separationWaiters: Array<() => void> = []
 
 function acquireSeparation(): Promise<() => void> {
@@ -612,9 +619,9 @@ export async function startJob(
 
   const options = rawOptions ? normalizeSplit(rawOptions) : legacySplit(stems)
   // what the player shows beside the stems: the video, downloaded to play in
-  // step, or only the cover image. A client that does not say gets whatever
-  // the settings file has
-  const picture = options.picture ?? (loadSettings().downloadVideo ? 'video' : 'thumbnail')
+  // step, or only the cover image. A client that does not say gets the
+  // server's default
+  const picture = options.picture ?? DEFAULT_PICTURE
   const tag = splitTag(options)
   const job: ActiveJob = { videoId, tag, cancelled: false }
   jobs.set(videoId, job)

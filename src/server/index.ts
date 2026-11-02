@@ -36,6 +36,7 @@ import {
 } from '../main/library'
 import { STEM_FORMATS, STEM_FORMAT_SETTING, wavCopy } from './storage'
 import {
+  DEFAULT_PICTURE,
   buildPreviews,
   cancelJob,
   compactLibrary,
@@ -511,14 +512,21 @@ route('GET', '/api/search', async (_req, _res, _params, url) => {
   return searchYouTube(url.searchParams.get('q') ?? '')
 })
 
-route('GET', '/api/settings', async () => loadSettings())
+/* downloadVideo is not the user's to change here: it comes from
+   STEMKIT_PICTURE, and tells the page which picture to start the split
+   panel on */
+function settingsForClient(settings: AppSettings): AppSettings {
+  return { ...settings, downloadVideo: DEFAULT_PICTURE === 'video' }
+}
+
+route('GET', '/api/settings', async () => settingsForClient(loadSettings()))
 
 route('PUT', '/api/settings', async (req) => {
   const patch = (await readJson(req)) as Partial<AppSettings>
   const next = saveSettings(patch)
   // a settings change can flip the thumbnail source, so cached lookups retry
   clearThumbMemo()
-  return next
+  return settingsForClient(next)
 })
 
 route('GET', '/api/thumbs/:videoId', async (_req, _res, params) => {

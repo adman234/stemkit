@@ -16,6 +16,8 @@ interface Props {
   onStartLocal: (filePath: string, options: SplitOptions) => void
   onSelect: (videoId: string) => void
   onOpenSettings: () => void
+  // what the Picture switch starts on (STEMKIT_PICTURE on the server)
+  defaultPicture?: 'video' | 'thumbnail'
 }
 
 // the suffix moves with the defaults: an older stored choice is dropped
@@ -35,8 +37,8 @@ function loadSplit(): SplitOptions {
     // optional extras, so the defaults have to come from the defaults
     if (!stored) return { ...DEFAULT_SPLIT, stems: [...DEFAULT_SPLIT.stems] }
     const saved = JSON.parse(stored)
-    const split = normalizeSplit(saved)
-    split.picture = saved?.picture === 'thumbnail' ? 'thumbnail' : 'video'
+    // the picture is not remembered: every visit starts on the server default
+    const { picture: _picture, ...split } = normalizeSplit(saved)
     return {
       ...split,
       studioVocals: saved?.studioVocals === true,
@@ -49,7 +51,8 @@ function loadSplit(): SplitOptions {
 
 function saveSplit(split: SplitOptions): void {
   try {
-    localStorage.setItem(SPLIT_KEY, JSON.stringify(split))
+    const { picture: _picture, ...rest } = split
+    localStorage.setItem(SPLIT_KEY, JSON.stringify(rest))
   } catch {}
 }
 
@@ -81,10 +84,13 @@ export function Home({
   onStart,
   onStartLocal,
   onSelect,
-  onOpenSettings
+  onOpenSettings,
+  defaultPicture = 'thumbnail'
 }: Props): React.ReactElement {
   const [query, setQuery] = useState('')
   const [split, setSplitState] = useState<SplitOptions>(loadSplit)
+  // a click on the Picture switch holds until the page is reloaded
+  const [pictureChoice, setPictureChoice] = useState<'video' | 'thumbnail' | null>(null)
   const [models, setModels] = useState<ModelStatus[]>([])
   const [results, setResults] = useState<SearchResult[]>([])
   const [searching, setSearching] = useState(false)
@@ -109,11 +115,11 @@ export function Home({
   }
 
   // what a split would actually run with
-  const effective = normalizeSplit(split)
+  const picture = pictureChoice ?? defaultPicture
+  const effective = { ...normalizeSplit(split), picture }
   const engine = engineInfo(effective.engine)
   const selected = new Set<StemId>(effective.stems)
   const hasStems = split.stems.length > 0
-  const picture = split.picture ?? 'video'
   const notDownloaded = (ids: string[]): number =>
     ids
       .filter((id) => !models.find((m) => m.id === id)?.ready)
@@ -392,7 +398,7 @@ export function Home({
                 {(['video', 'thumbnail'] as const).map((choice) => (
                   <button
                     key={choice}
-                    onClick={() => updateSplit({ picture: choice })}
+                    onClick={() => setPictureChoice(choice)}
                     className={`no-drag px-3 h-7 rounded-md text-[12px] font-semibold transition-colors ${
                       picture === choice ? 'bg-white text-black' : 'text-white/45 hover:text-white/80'
                     }`}

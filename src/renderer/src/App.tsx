@@ -275,6 +275,7 @@ export default function App(): React.ReactElement {
         songs={displaySongs}
         pending={pendingMap}
         gpu={!!status.gpu && !!settings?.gpuSplit}
+        defaultPicture={settings?.downloadVideo ? 'video' : 'thumbnail'}
         onStart={(u, o) => void startUrl(u, o)}
         onStartLocal={(path, o) => void startLocal(path, o)}
         onSelect={(id) => setActiveId(id)}
