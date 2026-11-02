@@ -31,6 +31,18 @@ interface Props {
   videoId: string
 }
 
+// the stretch of song last zoomed to, so the next song opens the same way
+const WINDOW_KEY = 'stemkit.notes.window'
+
+function loadWindow(): number {
+  try {
+    const saved = Number(localStorage.getItem(WINDOW_KEY))
+    return saved > 0 ? saved : NOTE_WINDOW_SECONDS
+  } catch {
+    return NOTE_WINDOW_SECONDS
+  }
+}
+
 type View = 'roll' | 'tab'
 const VIEW_KEY = 'stemkit.notes.view'
 
@@ -54,10 +66,13 @@ function loadTuning(videoId: string, kind: string): string {
   }
 }
 
-// notes are denser than chords, so the roll opens on a shorter stretch
-const NOTE_WINDOW_SECONDS = 8
+// about this much of the song on screen at first: wide enough that notes
+// scroll by slowly enough to read
+const NOTE_WINDOW_SECONDS = 16
 const GUTTER = 34
 const HEIGHT = 168
+// tab is taller, so the fret numbers can be bigger
+const TAB_HEIGHT = 216
 
 function download(content: Uint8Array<ArrayBuffer> | string, name: string, type: string): void {
   const url = URL.createObjectURL(new Blob([content], { type }))
@@ -79,7 +94,7 @@ export function NoteRoll(props: Props): React.ReactElement {
   const viewportRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const span = duration > 0 ? duration : data?.duration || 1
-  const [zoom, setZoom] = useState(() => defaultZoom(span, NOTE_WINDOW_SECONDS))
+  const [zoom, setZoom] = useState(() => defaultZoom(span, loadWindow()))
   const zoomTouched = useRef(false)
   const [lead, setLead] = useState(true)
   const [view, setView] = useState<View>(loadView)
@@ -110,9 +125,17 @@ export function NoteRoll(props: Props): React.ReactElement {
   // the longest note, to know how far back a note can start and still show
   const longest = useMemo(() => all.reduce((m, n) => Math.max(m, n.end - n.start), 0), [all])
 
+  // a zoom picked by hand is remembered as seconds on screen
+  useEffect(() => {
+    if (!zoomTouched.current || zoom === 1) return
+    try {
+      localStorage.setItem(WINDOW_KEY, String(span / zoom))
+    } catch {}
+  }, [zoom, span])
+
   useEffect(() => {
     if (zoomTouched.current) return
-    setZoom(defaultZoom(span, NOTE_WINDOW_SECONDS))
+    setZoom(defaultZoom(span, loadWindow()))
   }, [span])
 
   // the roll is drawn every frame straight onto a canvas: a few thousand
@@ -179,10 +202,10 @@ export function NoteRoll(props: Props): React.ReactElement {
         const yString = (s: number): number => Math.round((lines - 1 - s + 0.5) * lineH)
         ctx.fillStyle = 'rgba(255,255,255,0.16)'
         for (let s = 0; s < lines; s++) ctx.fillRect(GUTTER, yString(s), plotW, 1)
-        ctx.font = '700 11px ui-monospace, monospace'
+        ctx.font = '700 13px ui-monospace, monospace'
         ctx.textBaseline = 'middle'
         ctx.textAlign = 'center'
-        const pillH = Math.min(16, lineH - 4)
+        const pillH = Math.min(20, lineH - 6)
         const playing = new Set<number>()
         for (const n of tab) {
           if (n.end < t0 || n.start > t1) continue
@@ -200,11 +223,15 @@ export function NoteRoll(props: Props): React.ReactElement {
           ctx.fillStyle = color
           ctx.fillRect(x0, y - 1, x1 - x0, 3)
           const label = `${n.fret}${bendMark(n)}`
-          const w = Math.max(pillH, ctx.measureText(label).width + 7)
-          ctx.globalAlpha = on ? 1 : 0.45 + (0.55 * n.velocity) / 127
+          const w = Math.max(pillH, ctx.measureText(label).width + 9)
+          // solid, with a dark edge so notes that crowd together stay apart
+          ctx.globalAlpha = on ? 1 : 0.75 + (0.25 * n.velocity) / 127
           ctx.fillStyle = on ? '#ffffff' : color
+          ctx.strokeStyle = '#0b0a10'
+          ctx.lineWidth = 2
           ctx.beginPath()
-          ctx.roundRect(x0 - 2, y - pillH / 2, w, pillH, 4)
+          ctx.roundRect(x0 - 2, y - pillH / 2, w, pillH, 5)
+          ctx.stroke()
           ctx.fill()
           ctx.globalAlpha = 1
           ctx.fillStyle = '#0b0a10'
@@ -219,7 +246,7 @@ export function NoteRoll(props: Props): React.ReactElement {
         // string names on the left
         ctx.fillStyle = '#121118'
         ctx.fillRect(0, 0, GUTTER, cssH)
-        ctx.font = '600 10px ui-monospace, monospace'
+        ctx.font = '600 11px ui-monospace, monospace'
         stringNames(tuning).forEach((name, s) => {
           ctx.fillStyle = playing.has(s) ? color : 'rgba(255,255,255,0.45)'
           ctx.fillText(name, 8, yString(s) + 0.5)
@@ -502,7 +529,7 @@ export function NoteRoll(props: Props): React.ReactElement {
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}
           onPointerCancel={() => (dragRef.current = null)}
-          style={{ touchAction: 'none', height: HEIGHT }}
+          style={{ touchAction: 'none', height: tabView ? TAB_HEIGHT : HEIGHT }}
           className="relative rounded-lg overflow-hidden bg-white/[0.03] cursor-grab active:cursor-grabbing"
         >
           <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" />

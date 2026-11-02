@@ -11,10 +11,15 @@ import { StemLane } from './StemLane'
 import { ChordTimeline } from './ChordTimeline'
 import { NoteRoll } from './NoteRoll'
 import { Transport, type PresetId } from './Transport'
-import { DownloadIcon } from './Icons'
+import { DownloadIcon, GuitarIcon } from './Icons'
+import { tuningsFor } from '../lib/tab'
 import { DRUM_KIT, TRANSCRIBABLE, splitLabel } from '../../../shared/engines'
 
 type BufferCacheMap = BufferMap
+
+// the buttons under the song's details
+const ACTION =
+  'no-drag glass rounded-xl px-4 py-2.5 text-[13px] font-medium text-white/70 hover:text-white hover:bg-white/10 transition-colors flex items-center gap-2'
 
 type Progress = (done: number, total: number, note?: string) => void
 
@@ -258,6 +263,8 @@ export function Player({ song, settings }: Props): React.ReactElement {
   )
   const notesDone = song.notes ?? []
   const shownNoteStem = noteStem ?? noteStems.find((s) => notesDone.includes(s)) ?? null
+  // nothing transcribed yet: the first stem worth it gets a button by the exports
+  const offerTranscribe = notesDone.length === 0 && !shownNoteStem && noteStems.length > 0 && !!window.stemkit.transcribe
 
   useEffect(() => {
     setNoteStem(null)
@@ -510,8 +517,8 @@ export function Player({ song, settings }: Props): React.ReactElement {
 
       <div className="flex-1 min-h-0 overflow-y-auto px-3 md:px-6 pb-4 md:pb-6">
         <div className="w-full">
-          <div className="flex flex-col md:flex-row md:items-stretch gap-3 md:gap-4 md:h-[220px] 2xl:h-[300px]">
-            <div className="relative w-full md:w-auto md:h-full aspect-video shrink-0">
+          <div className="flex flex-col md:flex-row md:items-start gap-3 md:gap-4">
+            <div className="relative w-full md:w-auto md:h-[220px] 2xl:h-[300px] aspect-video shrink-0">
               <div className="absolute -inset-4 bg-violet-500/10 blur-3xl rounded-full pointer-events-none" />
               <div className="absolute inset-0 rounded-xl overflow-hidden ring-1 ring-white/10 bg-black shadow-2xl shadow-black/60">
                 <div ref={containerRef} className="absolute inset-0 [&_iframe]:w-full [&_iframe]:h-full" />
@@ -537,7 +544,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
               </div>
             </div>
 
-            <aside className="flex-1 min-w-0 glass rounded-2xl px-4 md:px-6 py-4 md:py-5 rise-in flex flex-col justify-between gap-3">
+            <aside className="flex-1 min-w-0 self-stretch md:min-h-[220px] 2xl:min-h-[300px] glass rounded-2xl px-4 md:px-6 py-4 md:py-5 rise-in flex flex-col justify-between gap-3">
               <div className="flex items-center gap-4">
                 <SongThumb
                   videoId={song.videoId}
@@ -586,84 +593,75 @@ export function Player({ song, settings }: Props): React.ReactElement {
                 ))}
               </div>
 
-              {!song.chords && window.stemkit.detectChords && (
-                <div className="text-[11.5px] leading-snug">
-                  {chordsBusy ? (
-                    <span className="text-white/45">Working out the key and chords…</span>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        setChordsError(null)
-                        setChordsBusy(true)
-                        void window.stemkit.detectChords?.(song.videoId)
-                      }}
-                      className="no-drag text-violet-300 hover:text-violet-200 transition-colors"
-                    >
-                      Detect the key and chords →
-                    </button>
-                  )}
-                  {chordsError && <span className="block text-rose-300 mt-0.5">{chordsError}</span>}
-                </div>
-              )}
-
-              {notesDone.length === 0 && !shownNoteStem && noteStems.length > 0 && window.stemkit.transcribe && (
-                <div className="text-[11.5px] leading-snug">
-                  {notesBusy.has(noteStems[0]) ? (
-                    <span className="text-white/45">Transcribing the {noteStems[0]}…</span>
-                  ) : (
-                    <button
-                      onClick={() => startTranscribe(noteStems[0])}
-                      className="no-drag text-violet-300 hover:text-violet-200 transition-colors"
-                    >
-                      Transcribe the {noteStems[0]} into notes →
-                    </button>
-                  )}
-                  {notesError && <span className="block text-rose-300 mt-0.5">{notesError}</span>}
-                </div>
-              )}
-
-              {!song.video && (
-                <div className="text-[11.5px] leading-snug">
-                  {videoPct !== null ? (
-                    <span className="text-white/45 font-mono">Downloading video… {videoPct}%</span>
-                  ) : (
-                    <button
-                      onClick={() => {
-                        setVideoError(null)
-                        setVideoPct(0)
-                        void window.stemkit.fetchVideo?.(song.videoId)
-                      }}
-                      className="no-drag text-violet-300 hover:text-violet-200 transition-colors"
-                    >
-                      {thumbnailOnly
-                        ? 'Download the video →'
-                        : videoStuck
-                          ? 'The YouTube player keeps falling behind. Download the video for smooth sync →'
-                          : 'Download the video for smooth sync →'}
-                    </button>
-                  )}
-                  {videoError && <span className="block text-rose-300 mt-0.5">{videoError}</span>}
-                </div>
-              )}
-
-              <div className="flex flex-wrap items-center gap-2 md:gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                {!song.chords && window.stemkit.detectChords && (
+                  <button
+                    onClick={() => {
+                      setChordsError(null)
+                      setChordsBusy(true)
+                      void window.stemkit.detectChords?.(song.videoId)
+                    }}
+                    disabled={chordsBusy}
+                    className={`${ACTION} disabled:opacity-60`}
+                  >
+                    {chordsBusy ? 'Working out the chords…' : 'Detect key and chords'}
+                  </button>
+                )}
+                {offerTranscribe && (
+                  <button
+                    onClick={() => startTranscribe(noteStems[0])}
+                    disabled={notesBusy.has(noteStems[0])}
+                    className={`${ACTION} disabled:opacity-60`}
+                  >
+                    <GuitarIcon className="w-4 h-4" />
+                    {notesBusy.has(noteStems[0])
+                      ? `Transcribing the ${noteStems[0]}…`
+                      : tuningsFor(noteStems[0]).length
+                        ? `Transcribe ${noteStems[0] === 'other' ? 'the other stem' : `the ${noteStems[0]}`} to tab`
+                        : `Transcribe the ${noteStems[0]} to notes`}
+                  </button>
+                )}
+                {!song.video && window.stemkit.fetchVideo && (
+                  <button
+                    onClick={() => {
+                      setVideoError(null)
+                      setVideoPct(0)
+                      void window.stemkit.fetchVideo?.(song.videoId)
+                    }}
+                    disabled={videoPct !== null}
+                    title={thumbnailOnly ? 'Download the video to play beside the stems' : 'Download the video for smooth sync'}
+                    className={`${ACTION} disabled:opacity-60`}
+                  >
+                    <DownloadIcon className="w-4 h-4" />
+                    {videoPct !== null ? (
+                      <span className="font-mono">Downloading video… {videoPct}%</span>
+                    ) : (
+                      'Download video'
+                    )}
+                  </button>
+                )}
                 <button
                   onClick={exportAllStems}
                   disabled={decoding || !!decodeError}
-                  className="no-drag glass rounded-xl px-5 py-3 text-[13px] font-medium text-white/70 hover:text-white hover:bg-white/10 transition-colors flex items-center gap-2 disabled:opacity-40"
+                  className={`${ACTION} disabled:opacity-40`}
                 >
                   <DownloadIcon className="w-4 h-4" />
                   Export everything
                 </button>
                 {youtubeUrl && (
-                  <button
-                    onClick={() => window.stemkit.openExternal(youtubeUrl)}
-                    className="no-drag glass rounded-xl px-5 py-3 text-[13px] font-medium text-white/70 hover:text-white hover:bg-white/10 transition-colors"
-                  >
+                  <button onClick={() => window.stemkit.openExternal(youtubeUrl)} className={ACTION}>
                     Open on YouTube
                   </button>
                 )}
               </div>
+              {!song.video && videoStuck && videoPct === null && (
+                <p className="text-[11.5px] text-white/45 leading-snug">
+                  The YouTube player keeps falling behind. Download the video for smooth sync.
+                </p>
+              )}
+              {!song.chords && chordsError && <p className="text-[11.5px] text-rose-300">{chordsError}</p>}
+              {offerTranscribe && notesError && <p className="text-[11.5px] text-rose-300">{notesError}</p>}
+              {!song.video && videoError && <p className="text-[11.5px] text-rose-300">{videoError}</p>}
             </aside>
           </div>
 
