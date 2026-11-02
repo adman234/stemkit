@@ -93,14 +93,18 @@ export function optionBlurb(id: OptionId, engine: EngineId): string {
 
 /* ---------- model checkpoints ---------- */
 
-export type ModelId = 'vocals' | 'sw' | 'drumsep' | 'chords'
+export type ModelId = 'vocals' | 'sw' | 'drumsep' | 'chords' | 'notes'
 
 export const MODELS: Record<ModelId, { name: string; sizeMb: number }> = {
   vocals: { name: 'Studio vocals (Mel-Band Roformer)', sizeMb: 913 },
   sw: { name: 'Best engine (BS-Roformer SW)', sizeMb: 699 },
   drumsep: { name: 'Drum kit (MDX23C DrumSep)', sizeMb: 438 },
-  chords: { name: 'Key and chords (BTC)', sizeMb: 12 }
+  chords: { name: 'Key and chords (BTC)', sizeMb: 12 },
+  notes: { name: 'Note transcription (Basic Pitch)', sizeMb: 1 }
 }
+
+/* stems worth transcribing into notes; drums have no pitch to read */
+export const TRANSCRIBABLE: StemId[] = ['guitar', 'bass', 'piano', 'vocals', 'other']
 
 export function modelsFor(o: SplitOptions): ModelId[] {
   const ids: ModelId[] = []

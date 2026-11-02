@@ -10,6 +10,7 @@ import { AUDIO_EXTENSIONS } from '../shared/audio'
 import {
   DEFAULT_SPLIT,
   MODELS,
+  TRANSCRIBABLE,
   modelsFor,
   normalizeSplit,
   outputStems,
@@ -26,6 +27,7 @@ import {
   hasGpuAcceleration,
   modelsDir,
   msstScript,
+  notesScript,
   roformerScript,
   separateScript,
   userDataDir,
@@ -238,6 +240,58 @@ function runChords(
       else onPct(pct, message)
     }
   })
+}
+
+/* ---------- notes ---------- */
+
+export function notesPath(videoId: string, stem: string): string {
+  return join(songDir(videoId), `notes-${stem}.json`)
+}
+
+/* the stems of a song that have been transcribed */
+export function notesStems(videoId: string): string[] {
+  return TRANSCRIBABLE.filter((stem) => existsSync(notesPath(videoId, stem)))
+}
+
+const noteJobs = new Set<string>()
+
+/* transcribes one stem of a song already in the library into notes. The
+   model is small and runs on the CPU, so this is seconds, not minutes */
+export async function transcribe(videoId: string, stem: string): Promise<void> {
+  const tag = `${videoId}:${stem}`
+  if (noteJobs.has(tag)) return
+  const fail = (error: string): void => broadcast('notes:event', { videoId, stem, error })
+  if (!existsSync(songDir(videoId))) return fail('That song is not in the library')
+  if (!(TRANSCRIBABLE as string[]).includes(stem)) return fail(`The ${stem} stem cannot be transcribed`)
+  const input = stemFile(videoId, stem)
+  if (!input) return fail(`This song has no ${stem} stem`)
+  noteJobs.add(tag)
+  broadcast('notes:event', { videoId, stem, running: true })
+  try {
+    const ok = await ensureModel('notes')
+    if (!ok) throw new Error('Could not download the note model')
+    const args = [
+      notesScript(),
+      '--input',
+      input,
+      '--out',
+      notesPath(videoId, stem),
+      '--ckpt-dir',
+      modelsDir(),
+      '--stem',
+      stem,
+      '--source',
+      `stem: ${stem}`
+    ]
+    await runProcess({ videoId, tag: 'notes', cancelled: false, standalone: true }, venvPython(), args)
+    broadcast('notes:event', { videoId, stem, ready: true })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    fail(message)
+    console.error(`[notes] ${videoId} ${stem}: ${message}`)
+  } finally {
+    noteJobs.delete(tag)
+  }
 }
 
 /* ---------- video for local playback ---------- */

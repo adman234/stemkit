@@ -26,6 +26,9 @@ the desktop app, use [upstream's releases](https://github.com/danielravina/stemk
   Demucs.
 - **Key and chord detection** with a zoomable chord timeline, hand corrections, and
   guitar chord shapes on hover.
+- **Note transcription** of the guitar, bass, piano, vocal or other stem onto a piano
+  roll under the player, with a top line view that picks the lead out of a guitar part,
+  bends drawn on the notes, and a MIDI download.
 - **Downloaded video playback** that stays in sync without rebuffering, as an
   alternative to the YouTube embed, or just the cover image, chosen per song.
 - **Phone support**: touch controls, pausing when the phone switches apps, and compressed
@@ -99,6 +102,7 @@ The add song panel picks the engine, the instruments and a few options per song.
 | Second pass | Twice the chunk overlap (two shifted passes on Quick). Under 0.1 dB better in testing | | about 2x | same | none |
 | Split drum kit | MDX23C DrumSep turns the drums stem into kick, snare, toms, hi-hat, ride and crash | | +10 s | about 1.2 GB | 438 MB |
 | Key and chords | BTC chord recognition marks the chords on a timeline and names the key. It listens to the harmonic stems, not the full mix | | +5 s | about 0.6 GB | 12 MB |
+| Notes | Spotify's Basic Pitch turns one stem into notes, from the player after the split. Runs on the CPU | | a few seconds | none | 0.2 MB |
 
 Scores are the median SDR over the 50 MUSDB18 test clips, averaged over vocals, drums,
 bass and other (higher is cleaner). Steps run one after another, so peak VRAM is the
@@ -109,6 +113,14 @@ needed, or ahead of time from Settings.
 Chord detection reads pop, rock and folk well and struggles with dense or ambiguous
 material, where the key confidence shown in the player drops. Guitar shapes come from a
 trimmed copy of [chords-db](https://github.com/tombatossals/chords-db) (MIT).
+
+Note transcription uses [Basic Pitch](https://github.com/spotify/basic-pitch) (Apache
+2.0); `python/notes.py` carries a trimmed copy of its decoding and gives the same notes
+as the package. It is polyphonic and not guitar specific: clean single-note lines come
+out well, while heavy distortion, palm mutes and fast runs leave extra or missing notes.
+There is no separate lead guitar stem, so **Top line** keeps the highest note at each
+moment, which on a guitar stem is mostly the lead. The roll shows the beat grid when the
+key and chords have been worked out, and the MIDI file uses that tempo.
 
 ## Video playback
 

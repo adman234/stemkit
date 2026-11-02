@@ -90,6 +90,10 @@ export function chordsScript(): string {
   return join(APP_DIR, 'python', 'chords.py')
 }
 
+export function notesScript(): string {
+  return join(APP_DIR, 'python', 'notes.py')
+}
+
 export function modelsDir(): string {
   return MODELS_DIR
 }
@@ -541,6 +545,10 @@ const MODEL_FILES: Record<Exclude<ModelId, 'vocals'>, { file: string; url: strin
   chords: {
     file: 'btc_model_large_voca.ckpt',
     url: 'https://raw.githubusercontent.com/jayg996/BTC-ISMIR19/master/test/btc_model_large_voca.pt'
+  },
+  notes: {
+    file: 'basic-pitch-icassp2022.onnx',
+    url: 'https://raw.githubusercontent.com/spotify/basic-pitch/v0.4.0/basic_pitch/saved_models/icassp_2022/nmp.onnx'
   }
 }
 

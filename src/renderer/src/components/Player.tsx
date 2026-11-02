@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AppSettings, ChordData, Song, StemId } from '../../../shared/types'
+import type { AppSettings, ChordData, NoteData, Song, StemId } from '../../../shared/types'
 import { DEFAULT_STEMS } from '../../../shared/types'
 import { decodeStem, engine, decodePayload, type BufferMap } from '../lib/engine'
 import { buildStemMeta } from '../lib/stems'
@@ -9,9 +9,10 @@ import { YouTubeHost, type YTState } from '../lib/youtube'
 import { LocalVideoHost, type VideoHost } from '../lib/video'
 import { StemLane } from './StemLane'
 import { ChordTimeline } from './ChordTimeline'
+import { NoteRoll } from './NoteRoll'
 import { Transport, type PresetId } from './Transport'
 import { DownloadIcon } from './Icons'
-import { DRUM_KIT, splitLabel } from '../../../shared/engines'
+import { DRUM_KIT, TRANSCRIBABLE, splitLabel } from '../../../shared/engines'
 
 type BufferCacheMap = BufferMap
 
@@ -119,6 +120,11 @@ export function Player({ song, settings }: Props): React.ReactElement {
   const [chords, setChords] = useState<ChordData | null>(null)
   const [chordsBusy, setChordsBusy] = useState(false)
   const [chordsError, setChordsError] = useState<string | null>(null)
+  // the stem shown in the note roll, and its transcription
+  const [noteStem, setNoteStem] = useState<StemId | null>(null)
+  const [notes, setNotes] = useState<NoteData | null>(null)
+  const [notesBusy, setNotesBusy] = useState<Set<string>>(new Set())
+  const [notesError, setNotesError] = useState<string | null>(null)
 
   const [vols, setVols] = useState<Partial<Record<StemId, number>>>({})
   const [mutes, setMutes] = useState<Set<StemId>>(new Set())
@@ -240,6 +246,61 @@ export function Player({ song, settings }: Props): React.ReactElement {
       alive = false
     }
   }, [song.videoId, song.chords])
+
+  /* Stems that can be turned into notes, the likeliest home of a guitar
+     part first: the guitar stem, or "other" on a four stem split */
+  const noteStems = useMemo(
+    () =>
+      (['guitar', 'other', 'piano', 'bass', 'vocals'] as StemId[]).filter(
+        (s) => TRANSCRIBABLE.includes(s) && (song.stems ?? DEFAULT_STEMS).includes(s)
+      ),
+    [song.stems]
+  )
+  const notesDone = song.notes ?? []
+  const shownNoteStem = noteStem ?? noteStems.find((s) => notesDone.includes(s)) ?? null
+
+  useEffect(() => {
+    setNoteStem(null)
+    setNotesBusy(new Set())
+    setNotesError(null)
+  }, [song.videoId])
+
+  useEffect(() => {
+    setNotes(null)
+    if (!shownNoteStem || !notesDone.includes(shownNoteStem) || !window.stemkit.getNotes) return
+    let alive = true
+    void window.stemkit.getNotes(song.videoId, shownNoteStem).then((data) => {
+      if (alive) setNotes(data)
+    })
+    return () => {
+      alive = false
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [song.videoId, shownNoteStem, notesDone.join()])
+
+  useEffect(() => {
+    if (!window.stemkit.onNotesEvent) return
+    return window.stemkit.onNotesEvent((ev) => {
+      if (ev.videoId !== song.videoId) return
+      setNotesBusy((prev) => {
+        const next = new Set(prev)
+        if (ev.running) next.add(ev.stem)
+        else next.delete(ev.stem)
+        return next
+      })
+      if (ev.error) setNotesError(ev.error)
+      else if (ev.running) setNotesError(null)
+      // a finished transcription arrives through the song list (App
+      // refreshes it), which adds the stem to song.notes and loads it here
+    })
+  }, [song.videoId])
+
+  const startTranscribe = (stem: StemId): void => {
+    setNoteStem(stem)
+    setNotesError(null)
+    setNotesBusy((prev) => new Set(prev).add(stem))
+    void window.stemkit.transcribe?.(song.videoId, stem)
+  }
 
   useEffect(() => {
     if (!window.stemkit.onChordsEvent) return
@@ -545,6 +606,22 @@ export function Player({ song, settings }: Props): React.ReactElement {
                 </div>
               )}
 
+              {notesDone.length === 0 && !shownNoteStem && noteStems.length > 0 && window.stemkit.transcribe && (
+                <div className="text-[11.5px] leading-snug">
+                  {notesBusy.has(noteStems[0]) ? (
+                    <span className="text-white/45">Transcribing the {noteStems[0]}…</span>
+                  ) : (
+                    <button
+                      onClick={() => startTranscribe(noteStems[0])}
+                      className="no-drag text-violet-300 hover:text-violet-200 transition-colors"
+                    >
+                      Transcribe the {noteStems[0]} into notes →
+                    </button>
+                  )}
+                  {notesError && <span className="block text-rose-300 mt-0.5">{notesError}</span>}
+                </div>
+              )}
+
               {!song.video && (
                 <div className="text-[11.5px] leading-snug">
                   {videoPct !== null ? (
@@ -615,6 +692,25 @@ export function Player({ song, settings }: Props): React.ReactElement {
                   .then(setChords)
                   .catch((err) => setChordsError(err instanceof Error ? err.message : String(err)))
               }}
+            />
+          )}
+
+          {shownNoteStem && window.stemkit.getNotes && (
+            <NoteRoll
+              data={notes && notes.stem === shownNoteStem ? notes : null}
+              stems={noteStems}
+              stem={shownNoteStem}
+              onStem={setNoteStem}
+              done={notesDone}
+              busy={notesBusy.has(shownNoteStem)}
+              error={notesError}
+              onTranscribe={startTranscribe}
+              duration={duration}
+              getPosition={getPosition}
+              onSeek={seekTo}
+              beats={chords?.beats}
+              tempo={chords?.tempo}
+              title={song.title}
             />
           )}
 

@@ -11,6 +11,8 @@ packaging
 pyyaml
 # CQT and beat tracking for chords.py
 librosa>=0.10,<1
+# runs the Basic Pitch note model for notes.py (CPU; the model is tiny)
+onnxruntime>=1.20,<2
 # unpinned on purpose: YouTube breaks old releases, and the container also
 # refreshes these on start (YTDLP_AUTO_UPDATE)
 yt-dlp

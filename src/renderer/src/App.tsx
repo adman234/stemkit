@@ -88,6 +88,10 @@ export default function App(): React.ReactElement {
     const offChords = window.stemkit.onChordsEvent?.((ev) => {
       if (ev.ready) void window.stemkit.listSongs().then(setSongs)
     })
+    // a stem transcribed into notes
+    const offNotes = window.stemkit.onNotesEvent?.((ev) => {
+      if (ev.ready) void window.stemkit.listSongs().then(setSongs)
+    })
     void window.stemkit.getAppVersion().then(setAppVersion)
     return () => {
       offJob()
@@ -96,6 +100,7 @@ export default function App(): React.ReactElement {
       offSettings()
       offVideo?.()
       offChords?.()
+      offNotes?.()
     }
   }, [])
 

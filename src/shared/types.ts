@@ -63,6 +63,29 @@ export interface ChordData {
   model: string
 }
 
+// one note heard in a stem, from the transcription model
+export interface NoteEvent {
+  start: number
+  end: number
+  // MIDI note number, 60 is middle C
+  pitch: number
+  // 1 to 127, how strongly the model heard it
+  velocity: number
+  // pitch bend in thirds of a semitone, sampled evenly from start to end;
+  // absent when the note holds its pitch
+  bend?: number[]
+}
+
+export interface NoteData {
+  // which stem was transcribed
+  stem: string
+  notes: NoteEvent[]
+  duration: number
+  // which audio it listened to
+  source: string
+  model: string
+}
+
 export interface ModelStatus {
   id: string
   name: string
@@ -96,6 +119,8 @@ export interface Song {
   video?: boolean
   // web version: key and chords have been worked out for this song
   chords?: boolean
+  // web version: the stems transcribed into notes
+  notes?: string[]
   // web version: when the stems were last loaded for playing, which is what
   // STEMKIT_KEEP_DAYS measures a song's age from
   lastPlayedAt?: number
@@ -114,6 +139,15 @@ export interface VideoEvent {
 // web version: progress of chord detection on a song already in the library
 export interface ChordsEvent {
   videoId: string
+  running?: boolean
+  ready?: boolean
+  error?: string
+}
+
+// web version: progress of note transcription on one stem
+export interface NotesEvent {
+  videoId: string
+  stem: string
   running?: boolean
   ready?: boolean
   error?: string
@@ -290,4 +324,8 @@ export interface StemKitApi {
   // corrects one chord by hand; null puts the detected one back
   setChordLabel?(videoId: string, start: number, label: string | null): Promise<ChordData>
   onChordsEvent?(cb: (ev: ChordsEvent) => void): () => void
+  // web version only: notes transcribed from one stem
+  getNotes?(videoId: string, stem: string): Promise<NoteData | null>
+  transcribe?(videoId: string, stem: string): Promise<void>
+  onNotesEvent?(cb: (ev: NotesEvent) => void): () => void
 }

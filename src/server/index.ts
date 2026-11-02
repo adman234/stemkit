@@ -46,15 +46,18 @@ import {
   fetchVideo,
   hasChords,
   hasVideo,
+  notesPath,
+  notesStems,
   previewPath,
   pruneUploads,
   saveUpload,
   searchYouTube,
   startJob,
   startLocalJob,
+  transcribe,
   videoPath
 } from './pipeline'
-import { MODELS } from '../shared/engines'
+import { MODELS, TRANSCRIBABLE } from '../shared/engines'
 import { clearThumbMemo, getThumb } from '../main/thumbs'
 
 const PORT = Number(process.env.PORT ?? 8080)
@@ -244,7 +247,11 @@ route('GET', '/api/songs', async () =>
   loadSongs().map((song) => ({
     ...song,
     ...(hasVideo(song.videoId) ? { video: true } : {}),
-    ...(hasChords(song.videoId) ? { chords: true } : {})
+    ...(hasChords(song.videoId) ? { chords: true } : {}),
+    ...(() => {
+      const notes = notesStems(song.videoId)
+      return notes.length ? { notes } : {}
+    })()
   }))
 )
 
@@ -256,6 +263,23 @@ route('GET', '/api/songs/:videoId/chords', async (_req, _res, params) => {
 
 route('POST', '/api/songs/:videoId/chords', async (_req, _res, params) => {
   void detectChords(videoIdParam(params))
+  return null
+})
+
+function transcribableParam(params: Params): string {
+  const stem = params.stem
+  if (!(TRANSCRIBABLE as string[]).includes(stem)) throw new HttpError(400, `Not a stem that can be transcribed: ${stem}`)
+  return stem
+}
+
+route('GET', '/api/songs/:videoId/notes/:stem', async (_req, _res, params) => {
+  const file = notesPath(videoIdParam(params), transcribableParam(params))
+  if (!existsSync(file)) throw new HttpError(404, 'That stem has not been transcribed')
+  return JSON.parse(readFileSync(file, 'utf8'))
+})
+
+route('POST', '/api/songs/:videoId/notes/:stem', async (_req, _res, params) => {
+  void transcribe(videoIdParam(params), transcribableParam(params))
   return null
 })
 

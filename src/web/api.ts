@@ -9,6 +9,8 @@ import type {
   StemKitApi,
   ChordData,
   ChordsEvent,
+  NoteData,
+  NotesEvent,
   UpdateEvent,
   VideoEvent
 } from '../shared/types'
@@ -201,6 +203,20 @@ const api: StemKitApi = {
     await request('POST', `/api/songs/${encodeURIComponent(videoId)}/chords`)
   },
   onChordsEvent: (cb) => subscribe<ChordsEvent>('chords:event', cb),
+  getNotes: async (videoId, stem) => {
+    try {
+      return await request<NoteData>(
+        'GET',
+        `/api/songs/${encodeURIComponent(videoId)}/notes/${encodeURIComponent(stem)}`
+      )
+    } catch {
+      return null
+    }
+  },
+  transcribe: async (videoId, stem) => {
+    await request('POST', `/api/songs/${encodeURIComponent(videoId)}/notes/${encodeURIComponent(stem)}`)
+  },
+  onNotesEvent: (cb) => subscribe<NotesEvent>('notes:event', cb),
   setChordLabel: (videoId, start, label) =>
     request<ChordData>('PUT', `/api/songs/${encodeURIComponent(videoId)}/chords/segment`, { start, label })
 }
