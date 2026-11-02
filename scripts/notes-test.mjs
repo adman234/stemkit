@@ -1,5 +1,6 @@
 // Checks the note helpers: names, the top line picked out of a chordal part,
-// overtones kept out of it, and the MIDI file read back event by event.
+// overtones kept out of it, the MIDI file read back event by event, and the
+// strings and frets picked for tab.
 // Run with: npm run web:test
 import { build } from 'esbuild'
 import { mkdtempSync } from 'fs'
@@ -7,18 +8,21 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { pathToFileURL } from 'url'
 
-const bundle = join(mkdtempSync(join(tmpdir(), 'stemkit-')), 'notes.mjs')
-await build({
-  entryPoints: [new URL('../src/renderer/src/lib/notes.ts', import.meta.url).pathname.replace(/^\/(\w:)/, '$1')],
-  outfile: bundle,
-  bundle: true,
-  format: 'esm',
-  platform: 'neutral',
-  logLevel: 'error'
-})
-const { noteName, isBlackKey, pitchRange, notesAt, isOvertone, topLine, notesToMidi } = await import(
-  pathToFileURL(bundle).href
-)
+const dir = mkdtempSync(join(tmpdir(), 'stemkit-'))
+async function load(name) {
+  const outfile = join(dir, `${name}.mjs`)
+  await build({
+    entryPoints: [new URL(`../src/renderer/src/lib/${name}.ts`, import.meta.url).pathname.replace(/^\/(\w:)/, '$1')],
+    outfile,
+    bundle: true,
+    format: 'esm',
+    platform: 'neutral',
+    logLevel: 'error'
+  })
+  return import(pathToFileURL(outfile).href)
+}
+const { noteName, isBlackKey, pitchRange, notesAt, isOvertone, topLine, notesToMidi } = await load('notes')
+const { fingerTab, tabToText, stringNames, tuningsFor, GUITAR_TUNINGS, BASS_TUNINGS } = await load('tab')
 
 const checks = []
 const near = (a, b, tolerance = 0.002) => Math.abs(a - b) < tolerance
@@ -145,6 +149,55 @@ function readMidi(bytes) {
   const offBeforeOn = midi.events.findIndex((e) => e.status === 0x80 && e.a === 52) <
     midi.events.findIndex((e) => e.status === 0x90 && e.a === 55)
   checks.push(['MIDI: a note ends before the next one on the same tick starts', offBeforeOn])
+}
+
+// tab
+{
+  const std = GUITAR_TUNINGS[0]
+  const frets = (tab) => tab.map((n) => `${n.string}/${n.fret}`).join(' ')
+  checks.push(['tab: string names', stringNames(std).join(' ') === 'E A D G B e' && stringNames(GUITAR_TUNINGS[2]).join(' ') === 'Eb Ab Db Gb Bb eb'])
+  checks.push(['tab: a tuning for guitar, other and bass, none for vocals', tuningsFor('guitar').length > 0 && tuningsFor('other').length > 0 && tuningsFor('bass')[0].strings.length === 4 && tuningsFor('vocals').length === 0])
+  // an open E major chord comes out as the open shape
+  const chord = fingerTab([40, 47, 52, 56, 59, 64].map((p) => note(0, 1, p)), std)
+  checks.push(['tab: open E chord', frets(chord) === '0/0 1/2 2/2 3/1 4/0 5/0'])
+  // A minor pentatonic up the neck stays in the fifth position box
+  const run = [45, 48, 50, 52, 55, 57, 60, 62, 64, 67, 69, 72]
+  const box = fingerTab(run.map((p, i) => note(i * 0.2, i * 0.2 + 0.2, p)), std)
+  checks.push(['tab: a pentatonic run stays in one position', box.every((n) => n.fret >= 5 && n.fret <= 8)])
+  checks.push(['tab: every fret matches its pitch', box.every((n) => std.strings[n.string] + n.fret === n.pitch)])
+  // a power chord shape slid along the A string keeps its shape
+  const power = [45, 47, 48].flatMap((root, i) => [note(i, i + 0.5, root), note(i, i + 0.5, root + 7)])
+  const slid = fingerTab(power, std)
+  checks.push(['tab: a power chord keeps its shape', slid.length === 6 && slid.every((n, i) => n.string === (i % 2 ? 2 : 1) && n.fret === [0, 2, 2, 4, 3, 5][i])])
+  // more notes than strings, or two on one string: the quietest go
+  // E2 and F2 only fit on the low string
+  const crowd = fingerTab([note(0, 1, 40, 100), note(0, 1, 41, 40), note(0, 1, 64, 80)], std)
+  checks.push(['tab: unplayable notes drop the quietest', crowd.length === 2 && crowd.some((n) => n.pitch === 40) && crowd.some((n) => n.pitch === 64)])
+  // below the guitar: moved up an octave to fit
+  checks.push(['tab: a note below the low string moves up an octave', frets(fingerTab([note(0, 1, 30)], std)) === '0/2'])
+  checks.push(['tab: bass in standard tuning', frets(fingerTab([note(0, 1, 28), note(1, 2, 33)], BASS_TUNINGS[0])) === '0/0 1/0'])
+
+  // text: a riff on the beat at 120 BPM, then a long rest, then more
+  const riff = [note(0, 0.25, 40), note(0.25, 0.5, 43), note(0.5, 0.75, 45, 90, [0, 3, 3]), note(20, 20.5, 40)]
+  const text = tabToText(fingerTab(riff, std), std, { tempo: 120, title: 'Riff' })
+  const lines = text.split('\n')
+  const low = lines.find((l) => l.startsWith('E|'))
+  checks.push(['tab text: header names the tuning', lines[0] === 'Riff' && lines[1].startsWith('Tuning: Standard (E A D G B e)')])
+  const a = lines.find((l) => l.startsWith('A|'))
+  // eighths at 120 BPM: every other sixteenth; the bend widens its column
+  checks.push(['tab text: notes land on their sixteenths', !!low && !!a && low.startsWith('E|0---3-----') && a.startsWith('A|--------0b-')])
+  checks.push(['tab text: high string printed first', lines.findIndex((l) => l.startsWith('e|')) < lines.findIndex((l) => l.startsWith('E|'))])
+  checks.push(['tab text: a long rest is left out', /\(\d+ bars without notes\)/.test(text) && text.includes('[0:20]')])
+  {
+    // every row of one block is the same length
+    const block = lines.slice(lines.indexOf('[0:00]') + 1, lines.indexOf('[0:00]') + 7)
+    checks.push(['tab text: a block is six equal rows', block.length === 6 && block.every((l) => l.length === block[0].length)])
+  }
+  // the chord pass's beats lay the bars out, even when they drift
+  const beats = [...Array(16)].map((_, i) => 1 + i * 0.6)
+  const onBeat = tabToText(fingerTab([note(1, 1.3, 40), note(1.6, 1.9, 40), note(3.4, 3.7, 40)], std), std, { beats })
+  const row = onBeat.split('\n').find((l) => l.startsWith('E|'))
+  checks.push(['tab text: notes follow the beat grid', !!row && row.startsWith('E|0-------0-------') && row.split('|')[2].startsWith('0-')])
 }
 
 let ok = true

@@ -711,6 +711,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
               beats={chords?.beats}
               tempo={chords?.tempo}
               title={song.title}
+              videoId={song.videoId}
             />
           )}
 

@@ -6,6 +6,7 @@ import { fmtTime } from '../lib/format'
 import { useFrameSeek } from '../lib/seek'
 import { ZOOM_STEPS, defaultZoom, dragSeek, timelineFrame } from '../lib/timeline'
 import { isBlackKey, noteName, notesAt, notesToMidi, pitchRange, topLine } from '../lib/notes'
+import { bendMark, fingerTab, stringNames, tabToText, tuningsFor, type TabNote } from '../lib/tab'
 
 interface Props {
   // the transcription on show, null while it loads or before there is one
@@ -26,6 +27,31 @@ interface Props {
   beats?: number[]
   tempo?: number | null
   title: string
+  // the tuning picked is kept per song
+  videoId: string
+}
+
+type View = 'roll' | 'tab'
+const VIEW_KEY = 'stemkit.notes.view'
+
+function loadView(): View {
+  try {
+    return localStorage.getItem(VIEW_KEY) === 'roll' ? 'roll' : 'tab'
+  } catch {
+    return 'tab'
+  }
+}
+
+function tuningKey(videoId: string, kind: string): string {
+  return `stemkit.tuning.${videoId}.${kind}`
+}
+
+function loadTuning(videoId: string, kind: string): string {
+  try {
+    return localStorage.getItem(tuningKey(videoId, kind)) ?? 'standard'
+  } catch {
+    return 'standard'
+  }
 }
 
 // notes are denser than chords, so the roll opens on a shorter stretch
@@ -33,8 +59,8 @@ const NOTE_WINDOW_SECONDS = 8
 const GUTTER = 34
 const HEIGHT = 168
 
-function download(bytes: Uint8Array<ArrayBuffer>, name: string): void {
-  const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/midi' }))
+function download(content: Uint8Array<ArrayBuffer> | string, name: string, type: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type }))
   const a = document.createElement('a')
   a.href = url
   a.download = name
@@ -56,6 +82,16 @@ export function NoteRoll(props: Props): React.ReactElement {
   const [zoom, setZoom] = useState(() => defaultZoom(span, NOTE_WINDOW_SECONDS))
   const zoomTouched = useRef(false)
   const [lead, setLead] = useState(true)
+  const [view, setView] = useState<View>(loadView)
+  const tunings = tuningsFor(stem)
+  // guitar and the "other" stem share one choice, bass has its own
+  const tuningKind = stem === 'bass' ? 'bass' : 'guitar'
+  const [tuningIds, setTuningIds] = useState<Record<string, string>>(() => ({
+    guitar: loadTuning(props.videoId, 'guitar'),
+    bass: loadTuning(props.videoId, 'bass')
+  }))
+  const tuning = tunings.find((t) => t.id === tuningIds[tuningKind]) ?? tunings[0]
+  const tabView = view === 'tab' && !!tuning
   const [nowText, setNowText] = useState('')
   const queueSeek = useFrameSeek(onSeek)
   const dragRef = useRef<{ x: number; at: number; active: boolean } | null>(null)
@@ -63,6 +99,7 @@ export function NoteRoll(props: Props): React.ReactElement {
   const all = data?.notes ?? []
   const line = useMemo(() => topLine(all), [all])
   const shown = lead ? line : all
+  const tab = useMemo<TabNote[]>(() => (tuning ? fingerTab(shown, tuning) : []), [shown, tuning])
   const color = STEM_INFO[stem]?.color ?? '#F472B6'
   const { low, high } = useMemo(() => {
     const r = pitchRange(all)
@@ -109,7 +146,7 @@ export function NoteRoll(props: Props): React.ReactElement {
       const yOf = (pitch: number): number => cssH - (pitch - low + 1) * rowH
 
       // key lanes: black keys a shade darker, a line under every C
-      for (let p = low; p <= high; p++) {
+      for (let p = low; p <= high && !tabView; p++) {
         if (isBlackKey(p)) {
           ctx.fillStyle = 'rgba(0,0,0,0.22)'
           ctx.fillRect(GUTTER, yOf(p), plotW, rowH)
@@ -134,6 +171,60 @@ export function NoteRoll(props: Props): React.ReactElement {
       }
 
       const sounding = new Set<NoteEvent>()
+
+      if (tabView && tuning) {
+        const lines = tuning.strings.length
+        const lineH = cssH / lines
+        // high string on top
+        const yString = (s: number): number => Math.round((lines - 1 - s + 0.5) * lineH)
+        ctx.fillStyle = 'rgba(255,255,255,0.16)'
+        for (let s = 0; s < lines; s++) ctx.fillRect(GUTTER, yString(s), plotW, 1)
+        ctx.font = '700 11px ui-monospace, monospace'
+        ctx.textBaseline = 'middle'
+        ctx.textAlign = 'center'
+        const pillH = Math.min(16, lineH - 4)
+        const playing = new Set<number>()
+        for (const n of tab) {
+          if (n.end < t0 || n.start > t1) continue
+          if (n.start < t0 - longest) continue
+          const x0 = xOf(n.start)
+          const x1 = Math.max(x0 + 2, xOf(n.end))
+          const y = yString(n.string)
+          const on = n.start <= position && position < n.end
+          if (on) {
+            sounding.add(n)
+            playing.add(n.string)
+          }
+          // how long it rings, along the string
+          ctx.globalAlpha = on ? 0.9 : 0.35
+          ctx.fillStyle = color
+          ctx.fillRect(x0, y - 1, x1 - x0, 3)
+          const label = `${n.fret}${bendMark(n)}`
+          const w = Math.max(pillH, ctx.measureText(label).width + 7)
+          ctx.globalAlpha = on ? 1 : 0.45 + (0.55 * n.velocity) / 127
+          ctx.fillStyle = on ? '#ffffff' : color
+          ctx.beginPath()
+          ctx.roundRect(x0 - 2, y - pillH / 2, w, pillH, 4)
+          ctx.fill()
+          ctx.globalAlpha = 1
+          ctx.fillStyle = '#0b0a10'
+          ctx.fillText(label, x0 - 2 + w / 2, y + 0.5)
+        }
+        ctx.textAlign = 'left'
+        ctx.globalAlpha = 1
+
+        ctx.fillStyle = 'rgba(255,255,255,0.9)'
+        ctx.fillRect(Math.round(GUTTER + (markerLeft / 100) * plotW), 0, 1, cssH)
+
+        // string names on the left
+        ctx.fillStyle = '#121118'
+        ctx.fillRect(0, 0, GUTTER, cssH)
+        ctx.font = '600 10px ui-monospace, monospace'
+        stringNames(tuning).forEach((name, s) => {
+          ctx.fillStyle = playing.has(s) ? color : 'rgba(255,255,255,0.45)'
+          ctx.fillText(name, 8, yString(s) + 0.5)
+        })
+      } else {
       const drawNotes = (notes: NoteEvent[], ghost: boolean): void => {
         for (const n of notes) {
           if (n.end < t0 || n.start > t1) continue
@@ -183,6 +274,7 @@ export function NoteRoll(props: Props): React.ReactElement {
         ctx.fillStyle = playing ? color : 'rgba(255,255,255,0.4)'
         ctx.fillText(noteName(p), 3, yOf(p) + rowH / 2)
       }
+      }
 
       const text = notesAt(shown, position)
         .map((n) => noteName(n.pitch))
@@ -194,7 +286,7 @@ export function NoteRoll(props: Props): React.ReactElement {
     }
     raf = requestAnimationFrame(frame)
     return () => cancelAnimationFrame(raf)
-  }, [getPosition, span, zoom, all, shown, lead, low, high, longest, color, props.beats])
+  }, [getPosition, span, zoom, all, shown, lead, low, high, longest, color, props.beats, tabView, tuning, tab])
 
   useEffect(() => {
     const viewport = viewportRef.current
@@ -274,6 +366,46 @@ export function NoteRoll(props: Props): React.ReactElement {
               </button>
             ))}
           </span>
+          {data && tunings.length > 0 && (
+            <span className="flex rounded-md bg-white/[0.06] p-0.5">
+              {(['tab', 'roll'] as const).map((v) => (
+                <button
+                  key={v}
+                  onClick={() => {
+                    setView(v)
+                    try {
+                      localStorage.setItem(VIEW_KEY, v)
+                    } catch {}
+                  }}
+                  className={`no-drag px-2 h-5 rounded text-[11px] font-semibold transition-colors ${
+                    (v === 'tab') === tabView ? 'bg-white text-black' : 'text-white/55 hover:text-white'
+                  }`}
+                >
+                  {v === 'tab' ? 'Tab' : 'Roll'}
+                </button>
+              ))}
+            </span>
+          )}
+          {data && tabView && (
+            <select
+              value={tuning.id}
+              onChange={(e) => {
+                const id = e.target.value
+                setTuningIds((prev) => ({ ...prev, [tuningKind]: id }))
+                try {
+                  localStorage.setItem(tuningKey(props.videoId, tuningKind), id)
+                } catch {}
+              }}
+              title="The tuning the part is played in: frets are worked out for it"
+              className="no-drag h-6 rounded-md bg-white/[0.06] text-white/70 text-[11px] font-semibold px-1.5 border-0 outline-none"
+            >
+              {tunings.map((t) => (
+                <option key={t.id} value={t.id} className="bg-[#18161f]">
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          )}
           {data && (
             <button
               onClick={() => setLead((v) => !v)}
@@ -323,11 +455,33 @@ export function NoteRoll(props: Props): React.ReactElement {
               >
                 <ZoomResetIcon className="w-3.5 h-3.5" />
               </button>
+              {tabView && (
+                <button
+                  onClick={() =>
+                    download(
+                      tabToText(tab, tuning, {
+                        beats: props.beats,
+                        tempo: props.tempo,
+                        title: `${props.title} - ${label}${lead ? ' (top line)' : ''}`,
+                        source: `Transcribed by StemKit with ${data.model}`
+                      }),
+                      `${safeName(props.title)} - ${label}${lead ? ' top line' : ''} tab.txt`,
+                      'text/plain;charset=utf-8'
+                    )
+                  }
+                  title="Download the tab as a text file, in bars on the song's beat"
+                  className="no-drag flex items-center gap-1 h-6 px-2 rounded-md bg-white/5 hover:bg-white/10 text-white/60 hover:text-white font-sans font-semibold transition-colors"
+                >
+                  <DownloadIcon className="w-3.5 h-3.5" />
+                  Tab
+                </button>
+              )}
               <button
                 onClick={() =>
                   download(
                     notesToMidi(shown, { tempo: props.tempo, stem, name: `${props.title} (${label})` }),
-                    `${safeName(props.title)} - ${label}${lead ? ' top line' : ''}.mid`
+                    `${safeName(props.title)} - ${label}${lead ? ' top line' : ''}.mid`,
+                    'audio/midi'
                   )
                 }
                 title={lead ? 'Download the top line as a MIDI file' : 'Download every note as a MIDI file'}
@@ -373,6 +527,7 @@ export function NoteRoll(props: Props): React.ReactElement {
       {data && (
         <p className="text-[10.5px] text-white/30 mt-1.5">
           {data.model}, from the {label} stem. Separation leftovers and overtones can show up as extra notes.
+          {tabView && ' Frets are a best guess at where a player would play each note.'}
         </p>
       )}
     </div>

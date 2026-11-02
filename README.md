@@ -26,11 +26,13 @@ the desktop app, use [upstream's releases](https://github.com/danielravina/stemk
   Demucs.
 - **Key and chord detection** with a zoomable chord timeline, hand corrections, and
   guitar chord shapes on hover.
-- **Note transcription** of the guitar, bass, piano, vocal or other stem onto a piano
-  roll under the player, with a top line view that picks the lead out of a guitar part,
-  bends drawn on the notes, and a MIDI download.
+- **Note transcription and tab** of the guitar, bass, piano, vocal or other stem under
+  the player: guitar and bass parts as scrolling tab in a choice of tunings, every stem
+  as a piano roll, a top line view that picks the lead out of a guitar part, bends
+  marked, and text tab and MIDI downloads.
 - **Downloaded video playback** that stays in sync without rebuffering, as an
-  alternative to the YouTube embed, or just the cover image, chosen per song.
+  alternative to the YouTube embed. Songs show the cover image by default, and the video
+  can be picked per song or made the default with `STEMKIT_PICTURE`.
 - **Phone support**: touch controls, pausing when the phone switches apps, and compressed
   copies of the stems so the player loads quickly.
 - **Compact storage**: stems are kept as FLAC, about a tenth of the float WAVs the
@@ -87,6 +89,7 @@ driver loaded. This image has not been tested on AMD hardware yet.
 | `STEMKIT_KEEP_DAYS` | unset | Removes songs that have not been played for this many days. Empty or `0` keeps them forever |
 | `STEMKIT_SONGS` / `STEMKIT_MODELS` | under `/config` | Move the library or the model downloads to another volume |
 | `STEMKIT_STEM_FORMAT` | `flac16` | How stems are kept on disk: `flac16`, `flac24` or `wav`. See [Stem storage](#stem-storage) |
+| `STEMKIT_PICTURE` | `thumbnail` | What a new split shows by default: `thumbnail` (the cover image, no video download) or `video`. It can still be changed per split. See [Video playback](#video-playback) |
 | `PUID` / `PGID` / `UMASK` | `99` / `100` / `022` | Owner and mask for files written to `/config` |
 | `PORT` | `8080` | Port the server listens on inside the container |
 
@@ -122,14 +125,26 @@ There is no separate lead guitar stem, so **Top line** keeps the highest note at
 moment, which on a guitar stem is mostly the lead. The roll shows the beat grid when the
 key and chords have been worked out, and the MIDI file uses that tempo.
 
+The guitar, other and bass stems open as **Tab**. The transcription has pitches, not
+strings, so `src/renderer/src/lib/tab.ts` picks a string and fret for every note the way
+a player would: chords as playable shapes, lines kept in one hand position, and a shape
+moved along the neck rather than re-fingered. It is a cheapest path through every
+possible fingering of the part, so a note is placed with what comes next in mind. Pick
+the tuning from the menu (standard, drop D, half step down, D standard, drop C; 4 and 5
+string bass), and it is remembered per song. **Tab** downloads it as text in 4/4 bars of
+sixteenths on the song's beat grid, with a time stamp per line and long rests left out.
+Bar lines start on the first beat found, which is not always the downbeat.
+
 ## Video playback
 
 The stems are the master clock. With **Video** picked under Picture on the add song
-screen (the default), a silent 360p, 480p or 720p copy is downloaded with each split and
-kept in sync smoothly; the quality is in Settings. Until it arrives, and for songs from
+screen, a silent 360p, 480p or 720p copy is downloaded with each split and kept in sync
+smoothly; the quality is in Settings. **Thumbnail** is the default, so songs show the
+cover image and skip the download unless Video is picked for that split. Set
+`STEMKIT_PICTURE=video` to make Video the default instead. Until it arrives, and for songs from
 before, the player uses the YouTube embed, which it only corrects for drift above a
-second, because every seek makes YouTube rebuffer. **Thumbnail** skips the download and
-shows the cover image, and the player has a link to fetch the video later.
+second, because every seek makes YouTube rebuffer. A thumbnail song's player has a link
+to fetch the video later.
 
 ## Storage
 
