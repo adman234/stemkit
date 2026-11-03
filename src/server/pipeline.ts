@@ -8,14 +8,18 @@ import { parseVideoId } from '../shared/url'
 import { localSongId } from '../shared/local'
 import { AUDIO_EXTENSIONS } from '../shared/audio'
 import {
+  DEFAULT_NOTE_MODEL,
   DEFAULT_SPLIT,
   MODELS,
+  NOTE_MODELS,
   TRANSCRIBABLE,
   modelsFor,
+  noteModelInfo,
   normalizeSplit,
   outputStems,
   planSteps,
   splitTag,
+  type NoteModelId,
   type PlannedStep
 } from '../shared/engines'
 import { broadcast } from './events'
@@ -25,9 +29,11 @@ import {
   ensureModel,
   getStatus,
   hasGpuAcceleration,
+  lyricsAlignScript,
   modelsDir,
   msstScript,
   notesScript,
+  notesYmt3Script,
   roformerScript,
   separateScript,
   userDataDir,
@@ -35,6 +41,7 @@ import {
   venvYtDlp,
   ytDlpRuntimeArgs
 } from './env'
+import { cleanTitle, searchLrclib } from './lyrics'
 // desktop main-process modules, reused as-is (see scripts/build-server.mjs)
 import { loadSettings } from '../main/settings'
 import {
@@ -244,38 +251,51 @@ function runChords(
 
 /* ---------- notes ---------- */
 
-export function notesPath(videoId: string, stem: string): string {
-  return join(songDir(videoId), `notes-${stem}.json`)
+/* where a stem's notes live, per model. Basic Pitch keeps the original
+   notes-<stem>.json so songs transcribed before the second model still read;
+   the heavier model writes alongside it with its id in the name */
+export function notesPath(videoId: string, stem: string, model: NoteModelId = 'basic-pitch'): string {
+  const suffix = model === 'basic-pitch' ? '' : `.${model}`
+  return join(songDir(videoId), `notes-${stem}${suffix}.json`)
 }
 
-/* the stems of a song that have been transcribed */
+/* the stems of a song that have been transcribed by any model */
 export function notesStems(videoId: string): string[] {
-  return TRANSCRIBABLE.filter((stem) => existsSync(notesPath(videoId, stem)))
+  return TRANSCRIBABLE.filter((stem) => NOTE_MODELS.some((m) => existsSync(notesPath(videoId, stem, m.id))))
 }
 
 const noteJobs = new Set<string>()
 
-/* transcribes one stem of a song already in the library into notes. The
-   model is small and runs on the CPU, so this is seconds, not minutes */
-export async function transcribe(videoId: string, stem: string): Promise<void> {
-  const tag = `${videoId}:${stem}`
+/* transcribes one stem of a song already in the library into notes with the
+   chosen model. Basic Pitch is seconds on the CPU; YourMT3+ is minutes, and
+   wants the GPU when there is one */
+export async function transcribe(
+  videoId: string,
+  stem: string,
+  model: NoteModelId = DEFAULT_NOTE_MODEL
+): Promise<void> {
+  const info = noteModelInfo(model)
+  const tag = `${videoId}:${stem}:${info.id}`
   if (noteJobs.has(tag)) return
-  const fail = (error: string): void => broadcast('notes:event', { videoId, stem, error })
+  const fail = (error: string): void => broadcast('notes:event', { videoId, stem, model: info.id, error })
   if (!existsSync(songDir(videoId))) return fail('That song is not in the library')
   if (!(TRANSCRIBABLE as string[]).includes(stem)) return fail(`The ${stem} stem cannot be transcribed`)
   const input = stemFile(videoId, stem)
   if (!input) return fail(`This song has no ${stem} stem`)
   noteJobs.add(tag)
-  broadcast('notes:event', { videoId, stem, running: true })
+  broadcast('notes:event', { videoId, stem, model: info.id, running: true })
   try {
-    const ok = await ensureModel('notes')
-    if (!ok) throw new Error('Could not download the note model')
+    const ok = await ensureModel(info.model)
+    if (!ok) throw new Error(`Could not download the ${info.name} model`)
+    // only the heavy, torch-based model runs on the GPU; Basic Pitch is ONNX
+    // on the CPU and takes no device flag
+    const gpu = info.heavy && loadSettings().gpuSplit && (await hasGpuAcceleration())
     const args = [
-      notesScript(),
+      info.id === 'ymt3' ? notesYmt3Script() : notesScript(),
       '--input',
       input,
       '--out',
-      notesPath(videoId, stem),
+      notesPath(videoId, stem, info.id),
       '--ckpt-dir',
       modelsDir(),
       '--stem',
@@ -283,15 +303,109 @@ export async function transcribe(videoId: string, stem: string): Promise<void> {
       '--source',
       `stem: ${stem}`
     ]
+    if (info.heavy) args.push('--device', gpu ? 'cuda' : 'cpu')
     await runProcess({ videoId, tag: 'notes', cancelled: false, standalone: true }, venvPython(), args)
-    broadcast('notes:event', { videoId, stem, ready: true })
+    broadcast('notes:event', { videoId, stem, model: info.id, ready: true })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     fail(message)
-    console.error(`[notes] ${videoId} ${stem}: ${message}`)
+    console.error(`[notes] ${videoId} ${stem} (${info.id}): ${message}`)
   } finally {
     noteJobs.delete(tag)
   }
+}
+
+/* ---------- lyrics ---------- */
+
+export function lyricsPath(videoId: string): string {
+  return join(songDir(videoId), 'lyrics.json')
+}
+
+/* the raw LRCLIB record, kept so a re-align (new vocals stem) needn't search
+   again, and so the player can show where the words came from */
+function lyricsSourcePath(videoId: string): string {
+  return join(songDir(videoId), 'lyrics-source.json')
+}
+
+export function hasLyrics(videoId: string): boolean {
+  return existsSync(lyricsPath(videoId))
+}
+
+const lyricJobs = new Set<string>()
+
+/* the artist and track to look up: a caller's hint wins, then the music tags
+   captured at add time, then a guess from the title */
+function lyricsQuery(videoId: string, hint?: { artist?: string; track?: string }): {
+  artist?: string
+  track?: string
+} {
+  const song = loadSongs().find((s) => s.videoId === videoId)
+  if (hint?.track) return { artist: hint.artist, track: hint.track }
+  if (song?.track) return { artist: song.artist, track: song.track }
+  const guess = cleanTitle(song?.title ?? '')
+  return { artist: song?.artist ?? guess.artist, track: guess.track }
+}
+
+/* finds the lyrics for a song on LRCLIB and times them to its vocals stem.
+   A hint (from the manual retry in the player) overrides the stored tags */
+export async function findLyrics(
+  videoId: string,
+  hint?: { artist?: string; track?: string }
+): Promise<void> {
+  if (lyricJobs.has(videoId)) return
+  if (!existsSync(songDir(videoId))) {
+    broadcast('lyrics:event', { videoId, error: 'That song is not in the library' })
+    return
+  }
+  lyricJobs.add(videoId)
+  broadcast('lyrics:event', { videoId, running: true })
+  try {
+    const song = loadSongs().find((s) => s.videoId === videoId)
+    const query = lyricsQuery(videoId, hint)
+    const record = await searchLrclib({ ...query, duration: song?.duration })
+    if (!record) {
+      broadcast('lyrics:event', { videoId, notFound: true })
+      return
+    }
+    writeFileSync(lyricsSourcePath(videoId), JSON.stringify(record))
+    const vocals = stemFile(videoId, 'vocals')
+    // without a vocals stem, or with none downloaded, we still show the words;
+    // the aligner falls back to the source's own line times (or none)
+    const ok = vocals ? await ensureModel('lyrics') : false
+    const gpu = ok && loadSettings().gpuSplit && (await hasGpuAcceleration())
+    const args = [
+      lyricsAlignScript(),
+      '--lyrics',
+      lyricsSourcePath(videoId),
+      '--out',
+      lyricsPath(videoId),
+      '--ckpt-dir',
+      modelsDir(),
+      '--device',
+      gpu ? 'cuda' : 'cpu',
+      '--duration',
+      String(song?.duration ?? 0)
+    ]
+    if (ok && vocals) args.push('--vocals', vocals)
+    await runProcess({ videoId, tag: 'lyrics', cancelled: false, standalone: true }, venvPython(), args)
+    upsertSong({ ...(song ?? { videoId, title: '', duration: 0, addedAt: Date.now() }), lyrics: true })
+    broadcast('lyrics:event', { videoId, ready: true })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    broadcast('lyrics:event', { videoId, error: message })
+    console.error(`[lyrics] ${videoId}: ${message}`)
+  } finally {
+    lyricJobs.delete(videoId)
+  }
+}
+
+/* after a split (fresh or served from cache), kick off a lyrics lookup when
+   the song was added with the lyrics option and has a vocals stem */
+function maybeAutoLyrics(videoId: string, options: SplitOptions): void {
+  if (!options.lyrics) return
+  if (!outputStems(options).includes('vocals')) return
+  if (hasLyrics(videoId)) return
+  void findLyrics(videoId)
 }
 
 /* ---------- video for local playback ---------- */
@@ -532,6 +646,10 @@ interface SplitMeta {
   addedAt: number
   startedAt: number
   source?: 'local'
+  // music tags for the lyrics lookup, when the source carried them
+  artist?: string
+  track?: string
+  album?: string
 }
 
 /* everything after the mix WAV exists: separation, storage and the library
@@ -590,11 +708,16 @@ async function splitMix(
       stems: expected,
       took: Math.round((Date.now() - meta.startedAt) / 1000),
       options: { ...options, picture },
+      ...(meta.artist ? { artist: meta.artist } : {}),
+      ...(meta.track ? { track: meta.track } : {}),
+      ...(meta.album ? { album: meta.album } : {}),
       ...(meta.source ? { source: meta.source } : {})
     })
     send({ kind: 'done', data: { videoId, song: songs[0] } })
     // the playback copies are not worth making the split wait for
     void buildPreviews(videoId, expected)
+    // lyrics, if asked for, run in the background after the stems are ready
+    maybeAutoLyrics(videoId, options)
   } finally {
     release()
   }
@@ -629,7 +752,11 @@ export async function startJob(
 
   try {
     const addedAt = loadSongs().find((s) => s.videoId === videoId)?.addedAt ?? Date.now()
-    if (reuseOrPrepare(videoId, tag, outputStems(options), picture)) return
+    if (reuseOrPrepare(videoId, tag, outputStems(options), picture)) {
+      // the split was served from cache; still honour a new lyrics request
+      maybeAutoLyrics(videoId, options)
+      return
+    }
     progress(job, 'metadata', 0, 'Reading video info')
 
     let raw = ''
@@ -638,12 +765,21 @@ export async function startJob(
         raw += chunk
       }
     })
-    let meta = { title: 'Unknown title', duration: 0 }
+    let meta: { title: string; duration: number; artist?: string; track?: string; album?: string } = {
+      title: 'Unknown title',
+      duration: 0
+    }
     try {
       const parsed = JSON.parse(raw)
+      const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
       meta = {
         title: typeof parsed.title === 'string' ? parsed.title : 'Unknown title',
-        duration: typeof parsed.duration === 'number' ? Math.round(parsed.duration) : 0
+        duration: typeof parsed.duration === 'number' ? Math.round(parsed.duration) : 0,
+        // yt-dlp fills these for music (YouTube Music, official uploads);
+        // regular videos leave them unset and lyrics falls back to the title
+        artist: str(parsed.artist) ?? str(parsed.creator) ?? str(parsed.uploader),
+        track: str(parsed.track),
+        album: str(parsed.album)
       }
       void cacheThumbnail(videoId, typeof parsed.thumbnail === 'string' ? parsed.thumbnail : undefined)
     } catch {

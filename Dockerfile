@@ -51,7 +51,7 @@ RUN case "$GPU" in \
 COPY docker/requirements.txt /tmp/requirements.txt
 RUN /opt/venv/bin/pip install -r /tmp/requirements.txt \
  && rm /tmp/requirements.txt \
- && GPU="$GPU" /opt/venv/bin/python -c "import os, torch, torchaudio, demucs, yt_dlp, packaging, onnxruntime; gpu = os.environ['GPU']; build = torch.version.hip if gpu == 'rocm' else torch.version.cuda; assert build, 'pip replaced the ' + gpu + ' torch build'; print('torch', torch.__version__, gpu, build)"
+ && GPU="$GPU" /opt/venv/bin/python -c "import os, torch, torchaudio, demucs, yt_dlp, packaging, onnxruntime, pytorch_lightning, transformers, mido, mir_eval, safetensors; gpu = os.environ['GPU']; build = torch.version.hip if gpu == 'rocm' else torch.version.cuda; assert build, 'pip replaced the ' + gpu + ' torch build'; print('torch', torch.__version__, gpu, build)"
 
 COPY --from=build /usr/local/bin/node /usr/local/bin/node
 

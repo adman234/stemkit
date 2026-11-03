@@ -7,6 +7,7 @@ import { useFrameSeek } from '../lib/seek'
 import { ZOOM_STEPS, defaultZoom, dragSeek, timelineFrame } from '../lib/timeline'
 import { isBlackKey, noteName, notesAt, notesToMidi, pitchRange, topLine } from '../lib/notes'
 import { bendMark, fingerTab, stringNames, tabToText, tuningsFor, type TabNote } from '../lib/tab'
+import { NOTE_MODELS, noteModelInfo, type NoteModelId } from '../../../shared/engines'
 
 interface Props {
   // the transcription on show, null while it loads or before there is one
@@ -15,9 +16,13 @@ interface Props {
   stems: StemId[]
   stem: StemId
   onStem: (stem: StemId) => void
-  // stems already transcribed
-  done: string[]
+  // which note model reads the stem, and switching it
+  model: NoteModelId
+  onModel: (model: NoteModelId) => void
+  // a transcription for this stem and model is running
   busy: boolean
+  // a getNotes fetch for this stem and model is in flight
+  loading: boolean
   error: string | null
   onTranscribe: (stem: StemId) => void
   duration: number
@@ -90,7 +95,9 @@ function safeName(title: string): string {
 }
 
 export function NoteRoll(props: Props): React.ReactElement {
-  const { data, stems, stem, onStem, done, busy, error, onTranscribe, duration, getPosition, onSeek } = props
+  const { data, stems, stem, onStem, model, onModel, busy, loading, error, onTranscribe, duration, getPosition, onSeek } =
+    props
+  const modelName = noteModelInfo(model).name
   const viewportRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const span = duration > 0 ? duration : data?.duration || 1
@@ -371,7 +378,6 @@ export function NoteRoll(props: Props): React.ReactElement {
     onSeek(Math.max(0, Math.min(span, ((x - translateX) / (plotW * zoom)) * span)))
   }
 
-  const transcribed = done.includes(stem)
   const following = zoom > 1
   const label = STEM_INFO[stem]?.label ?? stem
 
@@ -390,6 +396,20 @@ export function NoteRoll(props: Props): React.ReactElement {
                 }`}
               >
                 {STEM_INFO[s]?.label ?? s}
+              </button>
+            ))}
+          </span>
+          <span className="flex rounded-md bg-white/[0.06] p-0.5" title="Which model reads the notes out">
+            {NOTE_MODELS.map((m) => (
+              <button
+                key={m.id}
+                onClick={() => onModel(m.id)}
+                title={m.blurb}
+                className={`no-drag px-2 h-5 rounded text-[11px] font-semibold transition-colors ${
+                  m.id === model ? 'bg-white text-black' : 'text-white/55 hover:text-white'
+                }`}
+              >
+                {m.name}
               </button>
             ))}
           </span>
@@ -537,15 +557,15 @@ export function NoteRoll(props: Props): React.ReactElement {
       ) : (
         <div className="rounded-lg bg-white/[0.03] px-3 py-4 text-[12px] leading-snug">
           {busy ? (
-            <span className="text-white/45">Transcribing the {label}…</span>
-          ) : transcribed ? (
+            <span className="text-white/45">Transcribing the {label} with {modelName}…</span>
+          ) : loading ? (
             <span className="text-white/45">Loading the notes…</span>
           ) : (
             <button
               onClick={() => onTranscribe(stem)}
               className="no-drag text-violet-300 hover:text-violet-200 transition-colors"
             >
-              Transcribe the {label} →
+              Transcribe the {label} with {modelName} →
             </button>
           )}
         </div>

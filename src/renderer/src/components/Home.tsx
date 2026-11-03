@@ -42,7 +42,8 @@ function loadSplit(): SplitOptions {
     return {
       ...split,
       studioVocals: saved?.studioVocals === true,
-      drumKit: saved?.drumKit === true
+      drumKit: saved?.drumKit === true,
+      lyrics: saved?.lyrics === true
     }
   } catch {
     return normalizeSplit(null)

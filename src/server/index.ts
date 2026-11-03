@@ -47,6 +47,9 @@ import {
   fetchVideo,
   hasChords,
   hasVideo,
+  hasLyrics,
+  findLyrics,
+  lyricsPath,
   notesPath,
   notesStems,
   previewPath,
@@ -58,7 +61,7 @@ import {
   transcribe,
   videoPath
 } from './pipeline'
-import { MODELS, TRANSCRIBABLE } from '../shared/engines'
+import { DEFAULT_NOTE_MODEL, MODELS, NOTE_MODELS, TRANSCRIBABLE, type NoteModelId } from '../shared/engines'
 import { clearThumbMemo, getThumb } from '../main/thumbs'
 
 const PORT = Number(process.env.PORT ?? 8080)
@@ -249,6 +252,7 @@ route('GET', '/api/songs', async () =>
     ...song,
     ...(hasVideo(song.videoId) ? { video: true } : {}),
     ...(hasChords(song.videoId) ? { chords: true } : {}),
+    ...(hasLyrics(song.videoId) ? { lyrics: true } : {}),
     ...(() => {
       const notes = notesStems(song.videoId)
       return notes.length ? { notes } : {}
@@ -273,14 +277,36 @@ function transcribableParam(params: Params): string {
   return stem
 }
 
-route('GET', '/api/songs/:videoId/notes/:stem', async (_req, _res, params) => {
-  const file = notesPath(videoIdParam(params), transcribableParam(params))
+// which note model, from ?model=; the heavy one is the default
+function noteModelParam(url: URL): NoteModelId {
+  const model = url.searchParams.get('model')
+  return NOTE_MODELS.some((m) => m.id === model) ? (model as NoteModelId) : DEFAULT_NOTE_MODEL
+}
+
+route('GET', '/api/songs/:videoId/notes/:stem', async (_req, _res, params, url) => {
+  const model = noteModelParam(url)
+  const file = notesPath(videoIdParam(params), transcribableParam(params), model)
   if (!existsSync(file)) throw new HttpError(404, 'That stem has not been transcribed')
   return JSON.parse(readFileSync(file, 'utf8'))
 })
 
-route('POST', '/api/songs/:videoId/notes/:stem', async (_req, _res, params) => {
-  void transcribe(videoIdParam(params), transcribableParam(params))
+route('POST', '/api/songs/:videoId/notes/:stem', async (_req, _res, params, url) => {
+  void transcribe(videoIdParam(params), transcribableParam(params), noteModelParam(url))
+  return null
+})
+
+route('GET', '/api/songs/:videoId/lyrics', async (_req, _res, params) => {
+  const file = lyricsPath(videoIdParam(params))
+  if (!existsSync(file)) throw new HttpError(404, 'No lyrics found for this song')
+  return JSON.parse(readFileSync(file, 'utf8'))
+})
+
+route('POST', '/api/songs/:videoId/lyrics', async (req, _res, params) => {
+  const body = await readJson(req).catch(() => ({}) as Record<string, unknown>)
+  const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined)
+  const hint =
+    str(body.artist) || str(body.track) ? { artist: str(body.artist), track: str(body.track) } : undefined
+  void findLyrics(videoIdParam(params), hint)
   return null
 })
 

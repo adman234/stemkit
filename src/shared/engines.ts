@@ -56,7 +56,7 @@ export function engineInfo(id: EngineId | undefined): EngineInfo {
   return ENGINES.find((e) => e.id === id) ?? ENGINES[0]
 }
 
-export type OptionId = 'studioVocals' | 'secondPass' | 'drumKit' | 'chords'
+export type OptionId = 'studioVocals' | 'secondPass' | 'drumKit' | 'chords' | 'lyrics'
 
 export interface OptionInfo {
   id: OptionId
@@ -71,7 +71,8 @@ export const OPTIONS: OptionInfo[] = [
   { id: 'studioVocals', name: 'Studio vocals', needs: 'vocals', models: ['vocals'] },
   { id: 'secondPass', name: 'Second pass', models: [] },
   { id: 'drumKit', name: 'Split drum kit', needs: 'drums', models: ['drumsep'] },
-  { id: 'chords', name: 'Key and chords', models: ['chords'] }
+  { id: 'chords', name: 'Key and chords', models: ['chords'] },
+  { id: 'lyrics', name: 'Sync lyrics', needs: 'vocals', models: ['lyrics'] }
 ]
 
 export function optionBlurb(id: OptionId, engine: EngineId): string {
@@ -88,23 +89,67 @@ export function optionBlurb(id: OptionId, engine: EngineId): string {
   if (id === 'drumKit') {
     return 'Splits the drums into kick, snare, toms, hi-hat, ride and crash, each on its own fader.'
   }
+  if (id === 'lyrics') {
+    return 'Finds the lyrics online and times them to the singing, word by word, so you can sing along. Nothing happens if no lyrics are found. You can also do this later from the player.'
+  }
   return 'Works out the key and marks the chords on a timeline you can click through. It listens to the stems without drums or vocals, which is easier to read chords from than the full mix.'
 }
 
 /* ---------- model checkpoints ---------- */
 
-export type ModelId = 'vocals' | 'sw' | 'drumsep' | 'chords' | 'notes'
+export type ModelId = 'vocals' | 'sw' | 'drumsep' | 'chords' | 'notes' | 'notes-ymt3' | 'lyrics'
 
 export const MODELS: Record<ModelId, { name: string; sizeMb: number }> = {
   vocals: { name: 'Studio vocals (Mel-Band Roformer)', sizeMb: 913 },
   sw: { name: 'Best engine (BS-Roformer SW)', sizeMb: 699 },
   drumsep: { name: 'Drum kit (MDX23C DrumSep)', sizeMb: 438 },
   chords: { name: 'Key and chords (BTC)', sizeMb: 12 },
-  notes: { name: 'Note transcription (Basic Pitch)', sizeMb: 1 }
+  notes: { name: 'Note transcription (Basic Pitch)', sizeMb: 1 },
+  'notes-ymt3': { name: 'Note transcription (YourMT3+)', sizeMb: 536 },
+  lyrics: { name: 'Lyrics alignment (wav2vec2)', sizeMb: 378 }
 }
 
 /* stems worth transcribing into notes; drums have no pitch to read */
 export const TRANSCRIBABLE: StemId[] = ['guitar', 'bass', 'piano', 'vocals', 'other']
+
+/* ---------- note transcription models ---------- */
+
+/* two models read notes out of a stem: a heavy, accurate one and a light,
+   rough one. The player can switch between them per stem. */
+export type NoteModelId = 'ymt3' | 'basic-pitch'
+
+export interface NoteModelInfo {
+  id: NoteModelId
+  name: string
+  blurb: string
+  // the checkpoint it needs
+  model: ModelId
+  // the heavy one wants a GPU and a big download; the light one runs on the CPU
+  heavy: boolean
+}
+
+export const NOTE_MODELS: NoteModelInfo[] = [
+  {
+    id: 'ymt3',
+    name: 'YourMT3+',
+    blurb: 'A multi-instrument transcription model, much more accurate. Slower, and a larger one-time download.',
+    model: 'notes-ymt3',
+    heavy: true
+  },
+  {
+    id: 'basic-pitch',
+    name: 'Basic Pitch',
+    blurb: "Spotify's light model. Fast and tiny, but rougher, with stray octaves and ghost notes.",
+    model: 'notes',
+    heavy: false
+  }
+]
+
+export const DEFAULT_NOTE_MODEL: NoteModelId = 'ymt3'
+
+export function noteModelInfo(id: string | undefined): NoteModelInfo {
+  return NOTE_MODELS.find((m) => m.id === id) ?? NOTE_MODELS[0]
+}
 
 export function modelsFor(o: SplitOptions): ModelId[] {
   const ids: ModelId[] = []
@@ -126,7 +171,8 @@ export const DEFAULT_SPLIT: SplitOptions = {
   studioVocals: false,
   secondPass: false,
   drumKit: false,
-  chords: true
+  chords: true,
+  lyrics: false
 }
 
 /* validates options from a client (or localStorage) into a usable shape */
@@ -143,6 +189,7 @@ export function normalizeSplit(raw: unknown): SplitOptions {
     secondPass: o.secondPass === true,
     drumKit: o.drumKit === true && stems.includes('drums'),
     chords: o.chords === true,
+    lyrics: o.lyrics === true && stems.includes('vocals'),
     picture: o.picture === 'thumbnail' || o.picture === 'video' ? o.picture : undefined
   }
 }
@@ -176,6 +223,7 @@ export function splitLabel(o: SplitOptions): string {
   if (o.secondPass) parts.push('second pass')
   if (o.drumKit) parts.push('drum kit')
   if (o.chords) parts.push('chords')
+  if (o.lyrics) parts.push('lyrics')
   return parts.join(' · ')
 }
 

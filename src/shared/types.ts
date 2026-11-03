@@ -28,6 +28,8 @@ export interface SplitOptions {
   drumKit: boolean
   // work out the key and the chord progression
   chords: boolean
+  // find the lyrics online and time them to the singing
+  lyrics?: boolean
   // what plays beside the stems: the video, downloaded to stay in step, or
   // only the cover image. Absent on songs from before the choice existed
   picture?: 'video' | 'thumbnail'
@@ -121,6 +123,12 @@ export interface Song {
   chords?: boolean
   // web version: the stems transcribed into notes
   notes?: string[]
+  // web version: lyrics have been found and timed for this song
+  lyrics?: boolean
+  // music metadata from the source, used to look lyrics up
+  artist?: string
+  track?: string
+  album?: string
   // web version: when the stems were last loaded for playing, which is what
   // STEMKIT_KEEP_DAYS measures a song's age from
   lastPlayedAt?: number
@@ -148,9 +156,54 @@ export interface ChordsEvent {
 export interface NotesEvent {
   videoId: string
   stem: string
+  // which note model: 'ymt3' or 'basic-pitch'
+  model?: string
   running?: boolean
   ready?: boolean
   error?: string
+}
+
+// web version: one word of timed lyrics
+export interface LyricsWord {
+  start: number
+  end: number
+  text: string
+}
+
+// web version: one line of lyrics, with its words timed when the model could
+// follow it; start/end are absent on a line shown but never timed
+export interface LyricsLine {
+  start?: number
+  end?: number
+  text: string
+  words: LyricsWord[]
+  // the line kept its own rough timing: the model could not follow it
+  estimated?: boolean
+}
+
+export interface LyricsData {
+  source: string
+  id?: number
+  artist?: string | null
+  track?: string | null
+  album?: string | null
+  instrumental: boolean
+  // the lyrics came with line times from the source
+  synced: boolean
+  // the words were timed against the vocals by the alignment model
+  aligned: boolean
+  lines: LyricsLine[]
+  model?: string | null
+}
+
+// web version: progress of a lyrics lookup on a song
+export interface LyricsEvent {
+  videoId: string
+  running?: boolean
+  ready?: boolean
+  error?: string
+  // the search found nothing: the player can offer a manual retry
+  notFound?: boolean
 }
 
 export interface AppSettings {
@@ -324,8 +377,14 @@ export interface StemKitApi {
   // corrects one chord by hand; null puts the detected one back
   setChordLabel?(videoId: string, start: number, label: string | null): Promise<ChordData>
   onChordsEvent?(cb: (ev: ChordsEvent) => void): () => void
-  // web version only: notes transcribed from one stem
-  getNotes?(videoId: string, stem: string): Promise<NoteData | null>
-  transcribe?(videoId: string, stem: string): Promise<void>
+  // web version only: notes transcribed from one stem, with a given note
+  // model (defaults to the heavy one server-side)
+  getNotes?(videoId: string, stem: string, model?: string): Promise<NoteData | null>
+  transcribe?(videoId: string, stem: string, model?: string): Promise<void>
   onNotesEvent?(cb: (ev: NotesEvent) => void): () => void
+  // web version only: lyrics found online and timed to the singing
+  getLyrics?(videoId: string): Promise<LyricsData | null>
+  // hint overrides the stored artist/track when a search found nothing
+  findLyrics?(videoId: string, hint?: { artist?: string; track?: string }): Promise<void>
+  onLyricsEvent?(cb: (ev: LyricsEvent) => void): () => void
 }

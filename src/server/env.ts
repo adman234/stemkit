@@ -94,6 +94,14 @@ export function notesScript(): string {
   return join(APP_DIR, 'python', 'notes.py')
 }
 
+export function notesYmt3Script(): string {
+  return join(APP_DIR, 'python', 'notes_ymt3.py')
+}
+
+export function lyricsAlignScript(): string {
+  return join(APP_DIR, 'python', 'lyrics_align.py')
+}
+
 export function modelsDir(): string {
   return MODELS_DIR
 }
@@ -549,6 +557,18 @@ const MODEL_FILES: Record<Exclude<ModelId, 'vocals'>, { file: string; url: strin
   notes: {
     file: 'basic-pitch-icassp2022.onnx',
     url: 'https://raw.githubusercontent.com/spotify/basic-pitch/v0.4.0/basic_pitch/saved_models/icassp_2022/nmp.onnx'
+  },
+  // the YPTF.MoE+Multi (noPS) checkpoint from the authors' Hugging Face Space,
+  // pinned so a change there cannot swap what runs here. The model code is
+  // fetched separately by notes_ymt3.py on first use (same revision)
+  'notes-ymt3': {
+    file: 'yourmt3-yptf-moe-multi-nops.ckpt',
+    url: 'https://huggingface.co/spaces/mimbres/YourMT3/resolve/5e66c1ea173a8186e0d20432b841d3180cc015b5/amt/logs/2024/mc13_256_g4_all_v7_mt3f_sqr_rms_moe_wf4_n8k2_silu_rope_rp_b36_nops/checkpoints/last.ckpt'
+  },
+  // facebook/wav2vec2-base-960h, pinned, for lyrics forced alignment
+  lyrics: {
+    file: 'wav2vec2-base-960h.safetensors',
+    url: 'https://huggingface.co/facebook/wav2vec2-base-960h/resolve/22aad52d435eb6dbaf354bdad9b0da84ce7d6156/model.safetensors'
   }
 }
 

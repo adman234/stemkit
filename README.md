@@ -29,7 +29,13 @@ the desktop app, use [upstream's releases](https://github.com/danielravina/stemk
 - **Note transcription and tab** of the guitar, bass, piano, vocal or other stem under
   the player: guitar and bass parts as scrolling tab in a choice of tunings, every stem
   as a piano roll, a top line view that picks the lead out of a guitar part, bends
-  marked, and text tab and MIDI downloads.
+  marked, and text tab and MIDI downloads. Two models to choose between: YourMT3+ (the
+  default, a multi-instrument transformer, more accurate) and Spotify's lighter Basic
+  Pitch.
+- **Sing-along lyrics**: an option on the add-song screen (off by default) finds the
+  lyrics on LRCLIB and times them to the singing with a small alignment model on the
+  vocals stem, word by word. Also available from the player, with a manual search when
+  the automatic match is wrong.
 - **Downloaded video playback** that stays in sync without rebuffering, as an
   alternative to the YouTube embed. Songs show the cover image by default, and the video
   can be picked per song or made the default with `STEMKIT_PICTURE`.
@@ -105,7 +111,9 @@ The add song panel picks the engine, the instruments and a few options per song.
 | Second pass | Twice the chunk overlap (two shifted passes on Quick). Under 0.1 dB better in testing | | about 2x | same | none |
 | Split drum kit | MDX23C DrumSep turns the drums stem into kick, snare, toms, hi-hat, ride and crash | | +10 s | about 1.2 GB | 438 MB |
 | Key and chords | BTC chord recognition marks the chords on a timeline and names the key. It listens to the harmonic stems, not the full mix | | +5 s | about 0.6 GB | 12 MB |
-| Notes | Spotify's Basic Pitch turns one stem into notes, from the player after the split. Runs on the CPU | | a few seconds | none | 0.2 MB |
+| Sync lyrics | Finds the lyrics on LRCLIB and times them to the singing with wav2vec2 on the vocals stem. Off by default; needs the vocals stem | | +10 s | about 1 GB | 378 MB |
+| Notes (YourMT3+) | The default note model: a multi-instrument transformer. Accurate, GPU-friendly, from the player after the split | | about 20 s per stem | about 2 GB | 536 MB |
+| Notes (Basic Pitch) | Spotify's light note model. Fast, tiny, rougher. Runs on the CPU | | a few seconds | none | 0.2 MB |
 
 Scores are the median SDR over the 50 MUSDB18 test clips, averaged over vocals, drums,
 bass and other (higher is cleaner). Steps run one after another, so peak VRAM is the
@@ -117,13 +125,26 @@ Chord detection reads pop, rock and folk well and struggles with dense or ambigu
 material, where the key confidence shown in the player drops. Guitar shapes come from a
 trimmed copy of [chords-db](https://github.com/tombatossals/chords-db) (MIT).
 
-Note transcription uses [Basic Pitch](https://github.com/spotify/basic-pitch) (Apache
-2.0); `python/notes.py` carries a trimmed copy of its decoding and gives the same notes
-as the package. It is polyphonic and not guitar specific: clean single-note lines come
-out well, while heavy distortion, palm mutes and fast runs leave extra or missing notes.
-There is no separate lead guitar stem, so **Top line** keeps the highest note at each
-moment, which on a guitar stem is mostly the lead. The roll shows the beat grid when the
-key and chords have been worked out, and the MIDI file uses that tempo.
+Note transcription has two models, switched under the roll. **YourMT3+** (the default) is
+the multi-instrument transformer from [Chang et al., MLSP 2024](https://github.com/mimbres/YourMT3);
+`python/notes_ymt3.py` runs its YPTF.MoE+Multi checkpoint, fetching the model code at a
+pinned revision from the authors' [Hugging Face Space](https://huggingface.co/spaces/mimbres/YourMT3)
+(Apache 2.0) on first use. **Basic Pitch** ([Spotify](https://github.com/spotify/basic-pitch),
+Apache 2.0) is the lighter alternative; `python/notes.py` carries a trimmed copy of its
+decoding. YourMT3+ is more accurate and reads polyphony and several instruments; Basic
+Pitch is faster and tinier but leaves more stray octaves and ghost notes. Each model's
+notes are kept in their own file, so a stem can be read by both. There is no separate
+lead guitar stem, so **Top line** keeps the highest note at each moment, which on a
+guitar stem is mostly the lead. The roll shows the beat grid when the key and chords have
+been worked out, and the MIDI file uses that tempo.
+
+Lyrics come from [LRCLIB](https://lrclib.net), looked up by the song's artist and title
+(sent to lrclib.net). When a result carries line times they are used; the words are then
+timed to the vocals stem by a CTC forced alignment over [wav2vec2](https://huggingface.co/facebook/wav2vec2-base-960h)
+(Apache 2.0) in `python/lyrics_align.py`. A line the model cannot follow (another
+language, a mumbled line) keeps its own rough timing. Turn it on per song on the add-song
+screen, or use **Find lyrics** in the player; a manual artist and title search is there
+for when the automatic match is wrong.
 
 The guitar, other and bass stems open as **Tab**. The transcription has pitches, not
 strings, so `src/renderer/src/lib/tab.ts` picks a string and fret for every note the way
@@ -193,4 +214,7 @@ Developing the web version: `npm run web:build` builds the UI into `out/web` and
 
 ## License
 
-MIT, as upstream. See [LICENSE](LICENSE).
+MIT, as upstream. See [LICENSE](LICENSE). The bundled and fetched models keep their own
+licenses: YourMT3+ model code from the authors' Hugging Face Space (Apache 2.0, the
+GitHub repo is GPL and is not used), Basic Pitch (Apache 2.0), wav2vec2 (Apache 2.0),
+and lyrics from LRCLIB. Checkpoints are downloaded at runtime, not redistributed here.

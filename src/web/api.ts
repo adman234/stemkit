@@ -11,6 +11,8 @@ import type {
   ChordsEvent,
   NoteData,
   NotesEvent,
+  LyricsData,
+  LyricsEvent,
   UpdateEvent,
   VideoEvent
 } from '../shared/types'
@@ -203,20 +205,33 @@ const api: StemKitApi = {
     await request('POST', `/api/songs/${encodeURIComponent(videoId)}/chords`)
   },
   onChordsEvent: (cb) => subscribe<ChordsEvent>('chords:event', cb),
-  getNotes: async (videoId, stem) => {
+  getNotes: async (videoId, stem, model) => {
     try {
+      const q = model ? `?model=${encodeURIComponent(model)}` : ''
       return await request<NoteData>(
         'GET',
-        `/api/songs/${encodeURIComponent(videoId)}/notes/${encodeURIComponent(stem)}`
+        `/api/songs/${encodeURIComponent(videoId)}/notes/${encodeURIComponent(stem)}${q}`
       )
     } catch {
       return null
     }
   },
-  transcribe: async (videoId, stem) => {
-    await request('POST', `/api/songs/${encodeURIComponent(videoId)}/notes/${encodeURIComponent(stem)}`)
+  transcribe: async (videoId, stem, model) => {
+    const q = model ? `?model=${encodeURIComponent(model)}` : ''
+    await request('POST', `/api/songs/${encodeURIComponent(videoId)}/notes/${encodeURIComponent(stem)}${q}`)
   },
   onNotesEvent: (cb) => subscribe<NotesEvent>('notes:event', cb),
+  getLyrics: async (videoId) => {
+    try {
+      return await request<LyricsData>('GET', `/api/songs/${encodeURIComponent(videoId)}/lyrics`)
+    } catch {
+      return null
+    }
+  },
+  findLyrics: async (videoId, hint) => {
+    await request('POST', `/api/songs/${encodeURIComponent(videoId)}/lyrics`, hint ?? {})
+  },
+  onLyricsEvent: (cb) => subscribe<LyricsEvent>('lyrics:event', cb),
   setChordLabel: (videoId, start, label) =>
     request<ChordData>('PUT', `/api/songs/${encodeURIComponent(videoId)}/chords/segment`, { start, label })
 }

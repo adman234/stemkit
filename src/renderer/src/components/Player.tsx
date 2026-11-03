@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AppSettings, ChordData, NoteData, Song, StemId } from '../../../shared/types'
+import type { AppSettings, ChordData, LyricsData, NoteData, Song, StemId } from '../../../shared/types'
 import { DEFAULT_STEMS } from '../../../shared/types'
 import { decodeStem, engine, decodePayload, type BufferMap } from '../lib/engine'
 import { buildStemMeta } from '../lib/stems'
@@ -10,16 +10,35 @@ import { LocalVideoHost, type VideoHost } from '../lib/video'
 import { StemLane } from './StemLane'
 import { ChordTimeline } from './ChordTimeline'
 import { NoteRoll } from './NoteRoll'
+import { LyricsPanel } from './LyricsPanel'
 import { Transport, type PresetId } from './Transport'
-import { DownloadIcon, GuitarIcon } from './Icons'
+import { DownloadIcon, GuitarIcon, MicIcon } from './Icons'
 import { tuningsFor } from '../lib/tab'
-import { DRUM_KIT, TRANSCRIBABLE, splitLabel } from '../../../shared/engines'
+import {
+  DEFAULT_NOTE_MODEL,
+  DRUM_KIT,
+  NOTE_MODELS,
+  TRANSCRIBABLE,
+  splitLabel,
+  type NoteModelId
+} from '../../../shared/engines'
 
 type BufferCacheMap = BufferMap
 
 // the buttons under the song's details
 const ACTION =
   'no-drag glass rounded-xl px-4 py-2.5 text-[13px] font-medium text-white/70 hover:text-white hover:bg-white/10 transition-colors flex items-center gap-2'
+
+// which note model the roll shows and transcribes with, kept across songs
+const NOTE_MODEL_KEY = 'stemkit.notes.model'
+function loadNoteModel(): NoteModelId {
+  try {
+    const v = localStorage.getItem(NOTE_MODEL_KEY)
+    return NOTE_MODELS.some((m) => m.id === v) ? (v as NoteModelId) : DEFAULT_NOTE_MODEL
+  } catch {
+    return DEFAULT_NOTE_MODEL
+  }
+}
 
 type Progress = (done: number, total: number, note?: string) => void
 
@@ -125,11 +144,22 @@ export function Player({ song, settings }: Props): React.ReactElement {
   const [chords, setChords] = useState<ChordData | null>(null)
   const [chordsBusy, setChordsBusy] = useState(false)
   const [chordsError, setChordsError] = useState<string | null>(null)
-  // the stem shown in the note roll, and its transcription
+  // the stem shown in the note roll, which model reads it, and the result
   const [noteStem, setNoteStem] = useState<StemId | null>(null)
+  const [noteModel, setNoteModel] = useState<NoteModelId>(loadNoteModel)
   const [notes, setNotes] = useState<NoteData | null>(null)
+  // busy and reload are keyed by `${stem}:${model}`
   const [notesBusy, setNotesBusy] = useState<Set<string>>(new Set())
+  const [notesLoading, setNotesLoading] = useState(false)
+  const [notesReload, setNotesReload] = useState(0)
   const [notesError, setNotesError] = useState<string | null>(null)
+
+  // lyrics found online and timed to the singing
+  const [lyrics, setLyrics] = useState<LyricsData | null>(null)
+  const [lyricsBusy, setLyricsBusy] = useState(false)
+  const [lyricsError, setLyricsError] = useState<string | null>(null)
+  const [lyricsNotFound, setLyricsNotFound] = useState(false)
+  const [lyricsForm, setLyricsForm] = useState<{ artist: string; track: string } | null>(null)
 
   const [vols, setVols] = useState<Partial<Record<StemId, number>>>({})
   const [mutes, setMutes] = useState<Set<StemId>>(new Set())
@@ -274,39 +304,100 @@ export function Player({ song, settings }: Props): React.ReactElement {
 
   useEffect(() => {
     setNotes(null)
-    if (!shownNoteStem || !notesDone.includes(shownNoteStem) || !window.stemkit.getNotes) return
+    if (!shownNoteStem || !window.stemkit.getNotes) return
     let alive = true
-    void window.stemkit.getNotes(song.videoId, shownNoteStem).then((data) => {
-      if (alive) setNotes(data)
+    setNotesLoading(true)
+    void window.stemkit.getNotes(song.videoId, shownNoteStem, noteModel).then((data) => {
+      if (!alive) return
+      setNotes(data)
+      setNotesLoading(false)
     })
     return () => {
       alive = false
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [song.videoId, shownNoteStem, notesDone.join()])
+  }, [song.videoId, shownNoteStem, noteModel, notesReload])
 
   useEffect(() => {
     if (!window.stemkit.onNotesEvent) return
     return window.stemkit.onNotesEvent((ev) => {
       if (ev.videoId !== song.videoId) return
+      const key = `${ev.stem}:${ev.model ?? DEFAULT_NOTE_MODEL}`
       setNotesBusy((prev) => {
         const next = new Set(prev)
-        if (ev.running) next.add(ev.stem)
-        else next.delete(ev.stem)
+        if (ev.running) next.add(key)
+        else next.delete(key)
         return next
       })
       if (ev.error) setNotesError(ev.error)
       else if (ev.running) setNotesError(null)
-      // a finished transcription arrives through the song list (App
-      // refreshes it), which adds the stem to song.notes and loads it here
+      // reload the roll when the model it is showing finishes
+      else if (ev.ready && ev.stem === shownNoteStem && (ev.model ?? DEFAULT_NOTE_MODEL) === noteModel) {
+        setNotesReload((n) => n + 1)
+      }
+    })
+  }, [song.videoId, shownNoteStem, noteModel])
+
+  const startTranscribe = (stem: StemId, model: NoteModelId = noteModel): void => {
+    setNoteStem(stem)
+    setNoteModel(model)
+    setNotesError(null)
+    setNotesBusy((prev) => new Set(prev).add(`${stem}:${model}`))
+    void window.stemkit.transcribe?.(song.videoId, stem, model)
+  }
+
+  const chooseNoteModel = (model: NoteModelId): void => {
+    setNoteModel(model)
+    try {
+      localStorage.setItem(NOTE_MODEL_KEY, model)
+    } catch {}
+  }
+
+  // lyrics only make sense with a vocals stem to sing over
+  const canLyrics = (song.stems ?? DEFAULT_STEMS).includes('vocals') && !!window.stemkit.getLyrics
+
+  useEffect(() => {
+    setLyrics(null)
+    setLyricsNotFound(false)
+    setLyricsError(null)
+    setLyricsForm(null)
+    if (!song.lyrics || !window.stemkit.getLyrics) return
+    let alive = true
+    void window.stemkit.getLyrics(song.videoId).then((data) => {
+      if (alive) setLyrics(data)
+    })
+    return () => {
+      alive = false
+    }
+  }, [song.videoId, song.lyrics])
+
+  useEffect(() => {
+    if (!window.stemkit.onLyricsEvent) return
+    return window.stemkit.onLyricsEvent((ev) => {
+      if (ev.videoId !== song.videoId) return
+      if (ev.error) {
+        setLyricsBusy(false)
+        setLyricsError(ev.error)
+      } else if (ev.notFound) {
+        setLyricsBusy(false)
+        setLyricsNotFound(true)
+      } else if (ev.ready) {
+        setLyricsBusy(false)
+        setLyricsError(null)
+        setLyricsNotFound(false)
+        void window.stemkit.getLyrics?.(song.videoId).then(setLyrics)
+      } else if (ev.running) {
+        setLyricsBusy(true)
+        setLyricsError(null)
+        setLyricsNotFound(false)
+      }
     })
   }, [song.videoId])
 
-  const startTranscribe = (stem: StemId): void => {
-    setNoteStem(stem)
-    setNotesError(null)
-    setNotesBusy((prev) => new Set(prev).add(stem))
-    void window.stemkit.transcribe?.(song.videoId, stem)
+  const findLyrics = (hint?: { artist?: string; track?: string }): void => {
+    setLyricsBusy(true)
+    setLyricsError(null)
+    setLyricsNotFound(false)
+    void window.stemkit.findLyrics?.(song.videoId, hint)
   }
 
   useEffect(() => {
@@ -610,11 +701,11 @@ export function Player({ song, settings }: Props): React.ReactElement {
                 {offerTranscribe && (
                   <button
                     onClick={() => startTranscribe(noteStems[0])}
-                    disabled={notesBusy.has(noteStems[0])}
+                    disabled={notesBusy.has(`${noteStems[0]}:${noteModel}`)}
                     className={`${ACTION} disabled:opacity-60`}
                   >
                     <GuitarIcon className="w-4 h-4" />
-                    {notesBusy.has(noteStems[0])
+                    {notesBusy.has(`${noteStems[0]}:${noteModel}`)
                       ? `Transcribing the ${noteStems[0]}…`
                       : tuningsFor(noteStems[0]).length
                         ? `Transcribe ${noteStems[0] === 'other' ? 'the other stem' : `the ${noteStems[0]}`} to tab`
@@ -638,6 +729,17 @@ export function Player({ song, settings }: Props): React.ReactElement {
                     ) : (
                       'Download video'
                     )}
+                  </button>
+                )}
+                {canLyrics && !lyrics && (
+                  <button
+                    onClick={() => findLyrics()}
+                    disabled={lyricsBusy}
+                    title="Find the lyrics online and time them to the singing"
+                    className={`${ACTION} disabled:opacity-60`}
+                  >
+                    <MicIcon className="w-4 h-4" />
+                    {lyricsBusy ? 'Finding lyrics…' : 'Find lyrics'}
                   </button>
                 )}
                 <button
@@ -699,10 +801,12 @@ export function Player({ song, settings }: Props): React.ReactElement {
               stems={noteStems}
               stem={shownNoteStem}
               onStem={setNoteStem}
-              done={notesDone}
-              busy={notesBusy.has(shownNoteStem)}
+              model={noteModel}
+              onModel={chooseNoteModel}
+              busy={notesBusy.has(`${shownNoteStem}:${noteModel}`)}
+              loading={notesLoading}
               error={notesError}
-              onTranscribe={startTranscribe}
+              onTranscribe={(s) => startTranscribe(s)}
               duration={duration}
               getPosition={getPosition}
               onSeek={seekTo}
@@ -711,6 +815,105 @@ export function Player({ song, settings }: Props): React.ReactElement {
               title={song.title}
               videoId={song.videoId}
             />
+          )}
+
+          {canLyrics && (lyrics || lyricsBusy || lyricsNotFound || lyricsError || lyricsForm) && (
+            <div className="glass rounded-2xl px-4 py-3 mt-4">
+              <div className="flex items-baseline justify-between gap-4 mb-2 flex-wrap">
+                <div className="flex items-center gap-2.5 min-w-0 flex-wrap">
+                  <span className="text-[11px] font-semibold uppercase tracking-widest text-white/30">Lyrics</span>
+                  {lyrics && (lyrics.artist || lyrics.track) && (
+                    <span className="text-[11px] text-white/40 truncate">
+                      {[lyrics.artist, lyrics.track].filter(Boolean).join(' — ')}
+                    </span>
+                  )}
+                </div>
+                {lyrics && !lyricsForm && (
+                  <button
+                    onClick={() => setLyricsForm({ artist: song.artist ?? '', track: song.track ?? song.title })}
+                    className="no-drag text-[11px] font-semibold text-white/45 hover:text-white transition-colors"
+                  >
+                    Wrong song? Search again
+                  </button>
+                )}
+              </div>
+
+              {lyricsForm ? (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault()
+                    findLyrics({ artist: lyricsForm.artist.trim(), track: lyricsForm.track.trim() })
+                    setLyricsForm(null)
+                  }}
+                  className="flex flex-wrap items-end gap-2 py-1"
+                >
+                  <label className="flex flex-col gap-1 text-[10.5px] text-white/40">
+                    Artist
+                    <input
+                      value={lyricsForm.artist}
+                      onChange={(e) => setLyricsForm((f) => ({ ...f!, artist: e.target.value }))}
+                      className="no-drag h-8 w-44 rounded-md bg-white/[0.06] px-2 text-[13px] text-white outline-none border border-white/10 focus:border-white/30"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-[10.5px] text-white/40">
+                    Title
+                    <input
+                      value={lyricsForm.track}
+                      onChange={(e) => setLyricsForm((f) => ({ ...f!, track: e.target.value }))}
+                      className="no-drag h-8 w-56 rounded-md bg-white/[0.06] px-2 text-[13px] text-white outline-none border border-white/10 focus:border-white/30"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={!lyricsForm.track.trim()}
+                    className="no-drag h-8 px-3 rounded-md bg-white text-black text-[12px] font-semibold disabled:opacity-40"
+                  >
+                    Search
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLyricsForm(null)}
+                    className="no-drag h-8 px-3 rounded-md bg-white/[0.06] text-white/60 hover:text-white text-[12px] font-semibold"
+                  >
+                    Cancel
+                  </button>
+                </form>
+              ) : lyrics ? (
+                lyrics.lines.length ? (
+                  <LyricsPanel data={lyrics} getPosition={getPosition} onSeek={seekTo} />
+                ) : (
+                  <p className="text-[12px] text-white/45 px-1 py-3">These lyrics came through empty.</p>
+                )
+              ) : (
+                <p className="text-[12px] text-white/45 px-1 py-3">
+                  {lyricsBusy
+                    ? 'Finding the lyrics and timing them to the singing…'
+                    : lyricsNotFound
+                      ? 'No lyrics found for this song. Try searching with the right artist and title.'
+                      : (lyricsError ?? '')}
+                </p>
+              )}
+
+              {lyrics && !lyricsForm && (
+                <p className="text-[10.5px] text-white/30 mt-1.5">
+                  From LRCLIB.{' '}
+                  {lyrics.aligned
+                    ? 'Words timed to the vocals stem; a mumbled or non-English line keeps its own rough timing.'
+                    : lyrics.synced
+                      ? 'Line times from LRCLIB; the words were not timed to the vocals.'
+                      : 'No line times were available, so the words are shown untimed.'}
+                </p>
+              )}
+              {lyricsNotFound && !lyricsForm && (
+                <button
+                  onClick={() => setLyricsForm({ artist: song.artist ?? '', track: song.track ?? song.title })}
+                  className="no-drag text-[11.5px] font-semibold text-violet-300 hover:text-violet-200"
+                >
+                  Search by artist and title →
+                </button>
+              )}
+              {lyricsError && !lyricsForm && <p className="text-[11.5px] text-rose-300 mt-1">{lyricsError}</p>}
+            </div>
           )}
 
           <div className="mt-4 space-y-2">
