@@ -25,6 +25,30 @@ import numpy as np
 
 warnings.filterwarnings("ignore")
 
+# A container often runs as an arbitrary uid with no /etc/passwd entry (Unraid
+# uses 99). pytorch-lightning and transformers look the running user up by uid,
+# which raises "uid not found" and would fail loading. On POSIX, set the usual
+# environment and give such a lookup a fallback so it cannot crash.
+try:
+    import pwd as _pwd
+except ImportError:
+    _pwd = None  # Windows dev box: no pwd module, getpass uses USERNAME
+if _pwd is not None:
+    os.environ.setdefault("HOME", os.environ.get("TMPDIR") or "/tmp")
+    os.environ.setdefault("USER", "stemkit")
+    os.environ.setdefault("LOGNAME", "stemkit")
+    _real_getpwuid = _pwd.getpwuid
+
+    def _getpwuid(uid):
+        try:
+            return _real_getpwuid(uid)
+        except KeyError:
+            return _pwd.struct_passwd(
+                ("stemkit", "x", uid, os.getgid(), "StemKit", os.environ["HOME"], "/bin/sh")
+            )
+
+    _pwd.getpwuid = _getpwuid
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
