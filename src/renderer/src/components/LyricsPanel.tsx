@@ -5,6 +5,8 @@ interface Props {
   data: LyricsData
   getPosition: () => number
   onSeek: (seconds: number) => void
+  // 'stage' fills its parent with bigger type, for the landscape stage view
+  variant?: 'panel' | 'stage'
 }
 
 /* Sing-along view: the lyrics scroll with the song, the line being sung is
@@ -12,7 +14,8 @@ interface Props {
    inside it is brighter. Tapping a line jumps the song there. The heavy work
    (finding and timing the words) is done server side; this only follows the
    playhead. */
-export function LyricsPanel({ data, getPosition, onSeek }: Props): React.ReactElement {
+export function LyricsPanel({ data, getPosition, onSeek, variant = 'panel' }: Props): React.ReactElement {
+  const stage = variant === 'stage'
   const lines = data.lines
   const [current, setCurrent] = useState(-1)
   const [word, setWord] = useState(-1)
@@ -58,7 +61,9 @@ export function LyricsPanel({ data, getPosition, onSeek }: Props): React.ReactEl
     const el = lineRefs.current[current]
     const box = scrollRef.current
     if (!el || !box) return
-    const top = el.offsetTop - box.offsetTop
+    // measured on screen: the scroller is the line's offsetParent, so taking
+    // its own offsetTop off as well put the sung line below the middle
+    const top = el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop
     box.scrollTo({ top: top - box.clientHeight / 2 + el.clientHeight / 2, behavior: 'smooth' })
   }, [current])
 
@@ -67,7 +72,9 @@ export function LyricsPanel({ data, getPosition, onSeek }: Props): React.ReactEl
   return (
     <div
       ref={scrollRef}
-      className="relative rounded-lg bg-white/[0.03] overflow-y-auto px-4 py-3 h-[220px] leading-relaxed text-center"
+      className={`relative rounded-lg bg-white/[0.03] overflow-y-auto px-4 leading-relaxed text-center ${
+        stage ? 'h-full py-[20vh]' : 'py-3 h-[220px]'
+      }`}
     >
       {lines.map((line, i) => {
         const on = i === current
@@ -79,9 +86,11 @@ export function LyricsPanel({ data, getPosition, onSeek }: Props): React.ReactEl
               lineRefs.current[i] = el
             }}
             onClick={() => seekable && onSeek(line.start as number)}
-            className={`no-drag block w-full py-1 text-[15px] transition-colors ${
-              seekable ? 'cursor-pointer' : 'cursor-default'
-            } ${on ? 'text-white font-semibold' : 'text-white/35 hover:text-white/60'}`}
+            className={`no-drag block w-full py-1 transition-colors ${
+              stage ? (on ? 'text-[24px] font-bold leading-snug' : 'text-[18px]') : 'text-[15px]'
+            } ${seekable ? 'cursor-pointer' : 'cursor-default'} ${
+              on ? `text-white ${stage ? '' : 'font-semibold'}` : 'text-white/35 hover:text-white/60'
+            }`}
           >
             {on && aligned && line.words.length ? (
               <span>

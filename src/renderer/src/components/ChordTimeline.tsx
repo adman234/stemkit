@@ -24,6 +24,9 @@ interface Props {
   onSeek: (seconds: number) => void
   // null puts the detected chord back
   onOverride?: (start: number, label: string | null) => void
+  // 'stage' is the slim strip under the lyrics in the landscape stage view:
+  // no header, bigger labels, and a tap only seeks
+  variant?: 'full' | 'stage'
 }
 
 const QUALITIES: { id: string; label: string }[] = [
@@ -41,7 +44,15 @@ function shown(seg: ChordSegment): string {
   return seg.user ?? seg.label
 }
 
-export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverride }: Props): React.ReactElement {
+export function ChordTimeline({
+  chords,
+  duration,
+  getPosition,
+  onSeek,
+  onOverride,
+  variant = 'full'
+}: Props): React.ReactElement {
+  const stage = variant === 'stage'
   const rootRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
   const trackRef = useRef<HTMLDivElement>(null)
@@ -187,15 +198,39 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
   const { key } = chords
   const unsure = key.confidence < 0.3
   const current = currentIndex >= 0 ? segments[currentIndex] : undefined
-  const editingSegment = editing !== null ? segments[editing] : undefined
+  const editingSegment = !stage && editing !== null ? segments[editing] : undefined
   const windowSeconds = span / zoom
+  // the first chord after this one that is not a gap
+  let upcoming: ChordSegment | undefined
+  if (stage) {
+    for (let i = Math.max(0, currentIndex + 1); i < segments.length; i++) {
+      if (shown(segments[i]) !== 'N') {
+        upcoming = segments[i]
+        break
+      }
+    }
+  }
 
   const setChord = (label: string | null): void => {
     if (editingSegment && onOverride) onOverride(editingSegment.start, label)
   }
 
   return (
-    <div ref={rootRef} className="glass rounded-2xl px-4 py-3 mt-4">
+    <div
+      ref={rootRef}
+      className={stage ? 'rounded-xl bg-white/[0.03] px-2 py-2 flex items-center gap-2' : 'glass rounded-2xl px-4 py-3 mt-4'}
+    >
+      {stage && (
+        <div className="w-24 shrink-0 text-center leading-tight">
+          <div className="h-7 text-[22px] font-bold text-white tabular-nums truncate">
+            {current && shown(current) !== 'N' ? chordText(shown(current)) : ''}
+          </div>
+          <div className="h-4 text-[11px] text-white/40 truncate">
+            {upcoming ? `next ${chordText(shown(upcoming))}` : ''}
+          </div>
+        </div>
+      )}
+      {!stage && (
       <div className="flex items-baseline justify-between gap-4 mb-2 flex-wrap">
         <div className="flex items-baseline gap-2.5 min-w-0">
           <span className="text-[11px] font-semibold uppercase tracking-widest text-white/30">Key</span>
@@ -245,6 +280,7 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
           </span>
         </div>
       </div>
+      )}
 
       <div
         ref={viewportRef}
@@ -256,7 +292,9 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
            that started a few degrees off horizontal scrolled the page away
            instead of scrubbing */
         style={{ touchAction: 'none' }}
-        className="relative h-11 rounded-lg overflow-hidden bg-white/[0.03] cursor-grab active:cursor-grabbing"
+        className={`relative rounded-lg overflow-hidden bg-white/[0.03] cursor-grab active:cursor-grabbing ${
+          stage ? 'h-14 flex-1 min-w-0' : 'h-11'
+        }`}
       >
         <div
           ref={trackRef}
@@ -276,6 +314,7 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
                   // the pointer was scrubbing, not picking a chord
                   if (draggedRef.current) return
                   onSeek(seg.start)
+                  if (stage) return
                   setEditing(i)
                   setHover(null)
                 }}
@@ -300,9 +339,9 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
                 }}
               >
                 <span
-                  className={`px-1 text-[10.5px] font-semibold tracking-tight whitespace-nowrap ${
-                    isCurrent ? 'text-black' : 'text-white/90'
-                  }`}
+                  className={`px-1 font-semibold tracking-tight whitespace-nowrap ${
+                    stage ? 'text-[13px]' : 'text-[10.5px]'
+                  } ${isCurrent ? 'text-black' : 'text-white/90'}`}
                 >
                   {chordText(label)}
                   {edited && <span className="opacity-60">*</span>}
@@ -398,6 +437,7 @@ export function ChordTimeline({ chords, duration, getPosition, onSeek, onOverrid
       )}
 
       {hover &&
+        !stage &&
         editing === null &&
         shapesFor(hover.label).length > 0 &&
         createPortal(

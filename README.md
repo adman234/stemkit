@@ -40,7 +40,10 @@ the desktop app, use [upstream's releases](https://github.com/danielravina/stemk
   alternative to the YouTube embed. Songs show the cover image by default, and the video
   can be picked per song or made the default with `STEMKIT_PICTURE`.
 - **Phone support**: touch controls, pausing when the phone switches apps, and compressed
-  copies of the stems so the player loads quickly.
+  copies of the stems so the player loads quickly. Held sideways, a phone switches to a
+  stage view for playing along: big sing-along lyrics, the chords scrolling under them,
+  and one-tap mutes for each stem. The screen stays awake while a song plays (this needs
+  the HTTPS address; browsers only allow it on secure pages).
 - **Compact storage**: stems are kept as FLAC, about a tenth of the float WAVs the
   splitter makes, at a depth set per container.
 - **Browser export**: one stem as WAV, or every stem plus the original audio as a ZIP.

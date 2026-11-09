@@ -11,7 +11,11 @@ import { StemLane } from './StemLane'
 import { ChordTimeline } from './ChordTimeline'
 import { NoteRoll } from './NoteRoll'
 import { LyricsPanel } from './LyricsPanel'
+import { StageView } from './StageView'
 import { Transport, type PresetId } from './Transport'
+import { useWakeLock } from '../lib/wakeLock'
+import { useMediaQuery } from '../lib/media'
+import { isAudible, toggleAudible as flipAudible } from '../lib/mix'
 import { DownloadIcon, GuitarIcon, MicIcon } from './Icons'
 import { tuningsFor } from '../lib/tab'
 import {
@@ -168,6 +172,18 @@ export function Player({ song, settings }: Props): React.ReactElement {
   const [preset, setPreset] = useState<PresetId | 'custom'>('all')
 
   const stemMeta = useMemo(() => buildStemMeta(Object.keys(buffers) as StemId[]), [buffers])
+
+  // a phone dims and locks mid song unless told to stay awake
+  useWakeLock(playing)
+
+  // a touch device held sideways gets the stage view; "Full view" turns it off
+  // until the phone is turned upright and sideways again
+  const landscapePhone = useMediaQuery('(orientation: landscape) and (max-height: 500px) and (pointer: coarse)')
+  const [stageOff, setStageOff] = useState(false)
+  useEffect(() => {
+    if (!landscapePhone) setStageOff(false)
+  }, [landscapePhone])
+  const stage = landscapePhone && !stageOff
 
   // local files have no video: the cover slot shows a placeholder instead
   const isLocal = song.source === 'local'
@@ -582,6 +598,19 @@ export function Player({ song, settings }: Props): React.ReactElement {
     })
   }
 
+  // the stage view's chips: flip what is heard, whatever set the solos
+  const toggleAudible = (id: StemId): void => {
+    setPreset('custom')
+    const next = flipAudible(
+      stemMeta.map((s) => s.id),
+      mutes,
+      solos,
+      id
+    )
+    setMutes(next.mutes)
+    setSolos(next.solos)
+  }
+
   const toggleSolo = (id: StemId): void => {
     setPreset('custom')
     const turningOn = !solos.has(id)
@@ -601,9 +630,38 @@ export function Player({ song, settings }: Props): React.ReactElement {
   }
 
   return (
-    <div className="h-full flex flex-col">
-      <header className="drag-region h-12 md:h-14 shrink-0 flex items-center justify-between px-4 md:px-6">
+    <>
+    {stage && (
+      <StageView
+        title={song.title}
+        playing={playing}
+        duration={duration}
+        getPosition={getPosition}
+        onTogglePlay={togglePlay}
+        onSeek={seekTo}
+        chords={chords}
+        lyrics={lyrics}
+        lyricsBusy={lyricsBusy}
+        canLyrics={canLyrics}
+        onFindLyrics={() => findLyrics()}
+        stems={stemMeta}
+        audible={(id) => isAudible(id, mutes, solos)}
+        onToggleStem={toggleAudible}
+        onExit={() => setStageOff(true)}
+      />
+    )}
+    {/* kept mounted behind the stage view: the video host lives in it */}
+    <div className={`h-full flex flex-col ${stage ? 'hidden' : ''}`}>
+      <header className="drag-region h-12 md:h-14 shrink-0 flex items-center justify-between gap-3 px-4 md:px-6">
         <h2 className="text-sm font-semibold truncate">{song.title}</h2>
+        {landscapePhone && stageOff && (
+          <button
+            onClick={() => setStageOff(false)}
+            className="no-drag shrink-0 text-[12px] font-semibold text-violet-300 hover:text-violet-200 transition-colors"
+          >
+            Stage view
+          </button>
+        )}
       </header>
 
       <div className="flex-1 min-h-0 overflow-y-auto px-3 md:px-6 pb-4 md:pb-6">
@@ -824,7 +882,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
                   <span className="text-[11px] font-semibold uppercase tracking-widest text-white/30">Lyrics</span>
                   {lyrics && (lyrics.artist || lyrics.track) && (
                     <span className="text-[11px] text-white/40 truncate">
-                      {[lyrics.artist, lyrics.track].filter(Boolean).join(' — ')}
+                      {[lyrics.artist, lyrics.track].filter(Boolean).join(' · ')}
                     </span>
                   )}
                 </div>
@@ -932,7 +990,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
                 buffer={buffers[meta.id] ?? null}
                 duration={duration}
                 getPosition={getPosition}
-                audible={!mutes.has(meta.id) && (solos.size === 0 || solos.has(meta.id))}
+                audible={isAudible(meta.id, mutes, solos)}
                 volume={vols[meta.id] ?? 1}
                 muted={mutes.has(meta.id)}
                 soloed={solos.has(meta.id)}
@@ -947,5 +1005,6 @@ export function Player({ song, settings }: Props): React.ReactElement {
         </div>
       </div>
     </div>
+    </>
   )
 }

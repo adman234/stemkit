@@ -26,7 +26,7 @@ interface Props {
   youtubeUrl?: string
 }
 
-function SeekBar({
+export function SeekBar({
   duration,
   getPosition,
   onSeek,
