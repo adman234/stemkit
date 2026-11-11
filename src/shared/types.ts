@@ -96,6 +96,7 @@ export interface ModelStatus {
   downloading: boolean
   pct?: number
 }
+export type StemPanMap = Partial<Record<StemId, number>>
 
 // which GPU vendor GPU acceleration targets: NVIDIA via CUDA torch (windows
 // + linux), AMD via ROCm torch (linux only)
@@ -232,6 +233,10 @@ export interface AppSettings {
   // aac (.m4a) is transcoded on export via the bundled ffmpeg. mp3 isn't an
   // option — the bundled ffmpeg is a minimal static build without libmp3lame
   exportFormat: 'wav' | 'aac'
+  // absolute path: every finished split is copied out of the app's own storage
+  // into a <exportFolder>/<song>/ folder as soon as it lands in the library.
+  // Empty means "stay in the library only"
+  exportFolder: string
 }
 
 export const SETTINGS_REV = 2
@@ -246,6 +251,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   pauseWhenHidden: true,
   hideVideo: false,
   exportFormat: 'wav',
+  exportFolder: '',
   rev: SETTINGS_REV
 }
 
@@ -325,6 +331,7 @@ export interface StemKitApi {
   envUpdateYtDlp(): Promise<boolean>
   listSongs(): Promise<Song[]>
   deleteSong(videoId: string): Promise<void>
+  clearLibrary?(): Promise<void>
   getBuffers(videoId: string): Promise<Record<string, Uint8Array>>
   // web version: the playback formats this browser can decode, best first
   stemFormats?(): string[]
@@ -335,6 +342,8 @@ export interface StemKitApi {
     stem: string,
     format?: string
   ): Promise<{ bytes: Uint8Array; compressed: boolean; type?: string; format?: string }>
+  getStemPan(videoId: string): Promise<StemPanMap>
+  setStemPan(videoId: string, pans: StemPanMap): Promise<void>
   exportStem(videoId: string, stem: string): Promise<{ saved: boolean; path?: string }>
   exportAllStems(videoId: string): Promise<{ saved: boolean; path?: string; count?: number }>
   searchYouTube(query: string): Promise<SearchResult[]>
@@ -354,9 +363,15 @@ export interface StemKitApi {
     stems?: string[],
     options?: SplitOptions
   ): Promise<{ started: boolean }>
+  pickFolder?(): Promise<string | null>
+  // absolute path of a File dropped into the window (preload-side webUtils)
+  getPathForFile?(file: File): string
+  // web version: uploads a dropped file and returns the token startLocalJob takes
+  uploadAudioFile?(file: File): Promise<string>
   cancelJob(videoId?: string): Promise<void>
   openExternal(url: string): Promise<void>
   getAppVersion(): Promise<string>
+  checkForUpdates(): Promise<{ ok: boolean }>
   installUpdate(): void
   getSettings(): Promise<AppSettings>
   setSettings(patch: Partial<AppSettings>): Promise<AppSettings>
@@ -365,6 +380,7 @@ export interface StemKitApi {
   enginesStatus(): Promise<EngineStatus>
   fetchEngine(which: string): Promise<void>
   onUpdateEvent(cb: (ev: UpdateEvent) => void): () => void
+  onShowAbout?(cb: () => void): () => void
   onJobEvent(cb: (ev: JobEvent) => void): () => void
   onEnvEvent(cb: (ev: EnvEvent) => void): () => void
   onSettingsChange(cb: (settings: AppSettings) => void): () => void

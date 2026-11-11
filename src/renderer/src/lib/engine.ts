@@ -1,4 +1,4 @@
-import type { StemId } from '../../../shared/types'
+import type { StemId, StemPanMap } from '../../../shared/types'
 
 export type BufferMap = Partial<Record<StemId, AudioBuffer>>
 
@@ -129,6 +129,14 @@ export class StemEngine {
   private ctx: AudioContext | null = null
   private buffers: BufferMap = {}
   private gains: Partial<Record<StemId, GainNode>> = {}
+  private panners: Partial<Record<StemId, StereoPannerNode>> = {}
+  private mix = {
+    vols: {} as Partial<Record<StemId, number>>,
+    pans: {} as StemPanMap,
+    mutes: new Set<StemId>(),
+    solos: new Set<StemId>(),
+    master: 0.9
+  }
   private master: GainNode | null = null
   private sources: AudioBufferSourceNode[] = []
   private playing = false
@@ -140,7 +148,7 @@ export class StemEngine {
     if (!this.ctx) {
       this.ctx = audioContext()
       this.master = this.ctx.createGain()
-      this.master.gain.value = 0.9
+      this.master.gain.value = this.mix.master
       this.master.connect(this.ctx.destination)
     }
     return this.ctx
@@ -151,7 +159,12 @@ export class StemEngine {
     let g = this.gains[id]
     if (!g) {
       g = ctx.createGain()
-      g.connect(this.master!)
+      const pan = ctx.createStereoPanner()
+      pan.pan.value = this.mix.pans[id] ?? 0
+      g.gain.value = this.stemVolume(id)
+      g.connect(pan)
+      pan.connect(this.master!)
+      this.panners[id] = pan
       this.gains[id] = g
     }
     return g
@@ -168,7 +181,17 @@ export class StemEngine {
 
   setBuffers(buffers: BufferMap): void {
     this.stopAll()
+    for (const gain of Object.values(this.gains)) gain?.disconnect()
+    for (const pan of Object.values(this.panners)) pan?.disconnect()
+    this.gains = {}
+    this.panners = {}
+    this.mix = { vols: {}, pans: {}, mutes: new Set(), solos: new Set(), master: 0.9 }
     this.buffers = buffers
+  }
+
+  private stemVolume(id: StemId): number {
+    const { vols, mutes, solos } = this.mix
+    return !mutes.has(id) && (solos.size === 0 || solos.has(id)) ? vols[id] ?? 1 : 0
   }
 
   hasBuffers(): boolean {
@@ -218,13 +241,18 @@ export class StemEngine {
     vols: Partial<Record<StemId, number>>,
     mutes: Set<StemId>,
     solos: Set<StemId>,
-    masterVol: number
+    masterVol: number,
+    pans: StemPanMap = {}
   ): void {
+    this.mix = {
+      vols: { ...vols }, pans: { ...pans },
+      mutes: new Set(mutes), solos: new Set(solos), master: masterVol
+    }
     if (!this.ctx) return
     const now = this.ctx.currentTime
-    for (const id of Object.keys(vols) as StemId[]) {
-      const audible = !mutes.has(id) && (solos.size === 0 || solos.has(id))
-      this.getGain(id).gain.setTargetAtTime(audible ? vols[id] ?? 1 : 0, now, 0.012)
+    for (const id of Object.keys(this.buffers) as StemId[]) {
+      this.getGain(id).gain.setTargetAtTime(this.stemVolume(id), now, 0.012)
+      this.panners[id]?.pan.setTargetAtTime(pans[id] ?? 0, now, 0.012)
     }
     this.master?.gain.setTargetAtTime(masterVol, now, 0.012)
   }
@@ -232,6 +260,13 @@ export class StemEngine {
   stopAll(): void {
     this.playing = false
     this.stopSources()
+  }
+
+  // hand back the decoded audio: the singleton engine would otherwise pin the
+  // last viewed song for the rest of the session
+  release(): void {
+    this.stopAll()
+    this.buffers = {}
   }
 
   private stopSources(): void {

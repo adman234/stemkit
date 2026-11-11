@@ -6,7 +6,7 @@ import { basename, dirname, extname, join } from 'path'
 import type { JobEvent, JobStage, SplitOptions } from '../shared/types'
 import { parseVideoId } from '../shared/url'
 import { localSongId } from '../shared/local'
-import { AUDIO_EXTENSIONS } from '../shared/audio'
+import { AUDIO_EXTENSIONS } from '../shared/local'
 import {
   DEFAULT_NOTE_MODEL,
   DEFAULT_SPLIT,

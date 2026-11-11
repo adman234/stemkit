@@ -73,6 +73,7 @@ function findNode(requiredMajor) {
 }
 
 const STEPS = {
+  'test:audio': [['node', '--experimental-strip-types', '--test', 'tests/engine.test.mjs', 'tests/pan-storage.test.mjs']],
   dev: [['electron-vite', 'dev']],
   build: [['electron-vite', 'build']],
   typecheck: [
