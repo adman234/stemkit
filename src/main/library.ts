@@ -1,25 +1,9 @@
 import { existsSync, readFileSync, readdirSync, writeFileSync, rmSync, mkdirSync, openSync, readSync, closeSync } from 'fs'
-import { readFile } from 'fs/promises'
+import { readFile, cp } from 'fs/promises'
+import { spawn } from 'child_process'
 import { join } from 'path'
 import { songsDir, userDataDir } from './env'
-import { DEFAULT_STEMS, type Song } from '../shared/types'
-
-// drives both the file-dialog filter and the pre-flight extension check in
-// startLocalJob; anything here is fair game for ffmpeg to decode
-export const AUDIO_EXTENSIONS = [
-  'mp3',
-  'wav',
-  'm4a',
-  'aac',
-  'flac',
-  'ogg',
-  'opus',
-  'wma',
-  'aiff',
-  'aif',
-  'alac',
-  'webm'
-]
+import { DEFAULT_STEMS, type Song, type StemPanMap, type StemId } from '../shared/types'
 
 function libraryFile(): string {
   return join(userDataDir(), 'library.json')
@@ -83,13 +67,119 @@ export function touchSong(videoId: string): void {
 export function removeSong(videoId: string): Song[] {
   const songs = loadSongs().filter((s) => s.videoId !== videoId)
   saveSongs(songs)
-  rmSync(songDir(videoId), { recursive: true, force: true })
+  // songDir('') would point at the songs root itself and take every other
+  // song with it, so only ever delete a real single-segment id
+  if (videoId && !videoId.includes('/') && !videoId.includes('\\') && videoId !== '.') {
+    rmSync(songDir(videoId), { recursive: true, force: true })
+  }
   return songs
+}
+
+// wipes the whole library off the disk; running jobs are cancelled by the
+// caller first, otherwise they would keep writing into a deleted folder
+export function clearLibrary(): void {
+  saveSongs([])
+  rmSync(songsRoot(), { recursive: true, force: true })
+}
+
+export function sanitizeName(name: string): string {
+  const clean = name.replace(/[\\/:*?"<>|]/g, '-').trim()
+  // joined under the export root: '..' would land in its parent
+  if (clean === '.' || clean === '..') return 'stems'
+  return clean.length > 0 ? clean.slice(0, 120) : 'stems'
+}
+
+// the bundled ffmpeg is a minimal static build without libmp3lame, so mp3 isn't
+// an option — aac is a native encoder that needs no extra library
+export function transcodeToAac(ffmpeg: string, input: string, output: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(ffmpeg, ['-y', '-i', input, '-c:a', 'aac', '-b:a', '256k', output])
+    child.on('error', reject)
+    child.on('close', (code) =>
+      code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code} writing ${output}`))
+    )
+  })
+}
+
+// aac needs the bundled ffmpeg passed in; a null ffmpeg copies the lossless wav
+async function writeTo(
+  src: string,
+  dest: string,
+  format: 'wav' | 'aac',
+  ffmpeg: string | null
+): Promise<void> {
+  if (format === 'wav' || !ffmpeg) await cp(src, dest)
+  else await transcodeToAac(ffmpeg, src, dest)
+}
+
+export async function exportStems(
+  videoId: string,
+  title: string,
+  stems: string[],
+  root: string,
+  format: 'wav' | 'aac' = 'wav',
+  ffmpeg: string | null = null
+): Promise<{ path: string; count: number }> {
+  const dir = stemsDir(videoId)
+  const ext = format === 'aac' ? 'm4a' : 'wav'
+  const target = join(root, sanitizeName(title || videoId))
+  mkdirSync(target, { recursive: true })
+  const names = stems.filter((name) => existsSync(join(dir, `${name}.wav`)))
+  await Promise.all(
+    names.map((name) => writeTo(join(dir, `${name}.wav`), join(target, `${name}.${ext}`), format, ffmpeg))
+  )
+  const mix = mixWavPath(videoId)
+  if (existsSync(mix)) {
+    await writeTo(mix, join(target, `${sanitizeName(title || 'full track')}.${ext}`), format, ffmpeg)
+  }
+  return { path: target, count: names.length + (existsSync(mix) ? 1 : 0) }
 }
 
 export function stemsFor(song?: Song | null): string[] {
   return song?.stems?.length ? song.stems : DEFAULT_STEMS
 }
+
+function panSong(videoId: string): Song {
+  const song = loadSongs().find((s) => s.videoId === videoId)
+  if (!song || typeof videoId !== 'string' || !/^[\w-]+$/.test(videoId)) {
+    throw new Error('Unknown song')
+  }
+  return song
+}
+
+function normalizePan(song: Song, value: unknown): StemPanMap {
+  const pans: StemPanMap = {}
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return pans
+  const allowed = new Set<StemId>([
+    'vocals', 'drums', 'bass', 'other', 'piano', 'guitar',
+    // the drum kit pieces, when a song was split with the drum kit on
+    'kick', 'snare', 'toms', 'hihat', 'ride', 'crash'
+  ])
+  for (const id of stemsFor(song)) {
+    if (!allowed.has(id as StemId)) continue
+    const pan = (value as Record<string, unknown>)[id]
+    if (typeof pan === 'number' && Number.isFinite(pan)) {
+      pans[id as StemId] = Math.max(-1, Math.min(1, pan))
+    }
+  }
+  return pans
+}
+
+export function loadStemPan(videoId: string): StemPanMap {
+  const song = panSong(videoId)
+  try {
+    return normalizePan(song, JSON.parse(readFileSync(join(songDir(videoId), 'pan.json'), 'utf8')))
+  } catch {
+    return {}
+  }
+}
+
+export function saveStemPan(videoId: string, pans: unknown): void {
+  const song = panSong(videoId)
+  // Do not recreate a deleted song directory for a late player save.
+  writeFileSync(join(songDir(videoId), 'pan.json'), JSON.stringify(normalizePan(song, pans), null, 2))
+}
+
 
 /* A stem is kept as FLAC, or as float WAV for songs from before stems were
    compressed and for the rare stem that goes over full scale. This finds

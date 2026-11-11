@@ -14,10 +14,11 @@ import type {
   LyricsData,
   LyricsEvent,
   UpdateEvent,
-  VideoEvent
+  VideoEvent,
+  StemPanMap
 } from '../shared/types'
 import { playbackFormats } from '../shared/playback'
-import { AUDIO_EXTENSIONS } from '../shared/audio'
+import { AUDIO_EXTENSIONS } from '../shared/local'
 
 /* Browser implementation of the window.stemkit bridge. The desktop preload
    forwards these calls to the Electron main process over IPC; here they go
@@ -89,6 +90,17 @@ function chooseFile(accept: string): Promise<File | null> {
   })
 }
 
+async function uploadAudioFile(file: File): Promise<string> {
+  const res = await fetch('/api/uploads', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name) },
+    body: file
+  })
+  const data = (await res.json().catch(() => null)) as { token?: string; error?: string } | null
+  if (!res.ok || !data?.token) throw new Error(data?.error || `Upload failed (HTTP ${res.status})`)
+  return data.token
+}
+
 function download(href: string): void {
   const a = document.createElement('a')
   a.href = href
@@ -139,6 +151,10 @@ const api: StemKitApi = {
       format
     }
   },
+  getStemPan: (videoId) => request<StemPanMap>('GET', `/api/songs/${encodeURIComponent(videoId)}/pan`),
+  setStemPan: async (videoId, pans) => {
+    await request('PUT', `/api/songs/${encodeURIComponent(videoId)}/pan`, pans)
+  },
   exportStem: async (videoId, stem) => {
     download(`/api/songs/${encodeURIComponent(videoId)}/stems/${encodeURIComponent(stem)}.wav?download=1`)
     return { saved: true }
@@ -154,16 +170,10 @@ const api: StemKitApi = {
   // the path the desktop app would have
   pickAudioFile: async () => {
     const file = await chooseFile(`audio/*,${AUDIO_EXTENSIONS.map((e) => `.${e}`).join(',')}`)
-    if (!file) return null
-    const res = await fetch('/api/uploads', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream', 'X-File-Name': encodeURIComponent(file.name) },
-      body: file
-    })
-    const data = (await res.json().catch(() => null)) as { token?: string; error?: string } | null
-    if (!res.ok || !data?.token) throw new Error(data?.error || `Upload failed (HTTP ${res.status})`)
-    return data.token
+    return file ? uploadAudioFile(file) : null
   },
+  // a file dropped on the window takes the same route as a picked one
+  uploadAudioFile: (file) => uploadAudioFile(file),
   startLocalJob: (token, model, stems, options) =>
     request<{ started: boolean }>('POST', '/api/jobs/local', { token, model, stems, options }),
   cancelJob: async (videoId) => {
@@ -176,6 +186,7 @@ const api: StemKitApi = {
   },
   getAppVersion: () => request<string>('GET', '/api/version'),
   // the container updates by pulling a new image, never in place
+  checkForUpdates: async () => ({ ok: false }),
   installUpdate: () => undefined,
   getSettings: () => request<AppSettings>('GET', '/api/settings'),
   setSettings: (patch) => request<AppSettings>('PUT', '/api/settings', patch),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AppSettings, ChordData, LyricsData, NoteData, Song, StemId } from '../../../shared/types'
+import type { AppSettings, ChordData, LyricsData, NoteData, Song, StemId, StemPanMap } from '../../../shared/types'
 import { DEFAULT_STEMS } from '../../../shared/types'
 import { decodeStem, engine, decodePayload, type BufferMap } from '../lib/engine'
 import { buildStemMeta } from '../lib/stems'
@@ -26,6 +26,9 @@ import {
   splitLabel,
   type NoteModelId
 } from '../../../shared/engines'
+
+// number keys 1-9 then 0 mute the lane shown in that position, top to bottom
+const STEM_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']
 
 type BufferCacheMap = BufferMap
 
@@ -110,16 +113,39 @@ async function loadBuffers(song: Song, onProgress: Progress): Promise<BufferCach
   return out
 }
 
+// one decoded song is a few hundred MB of Float32 PCM sitting in the renderer,
+// so this is a small LRU rather than an accumulating one: it keeps a jump back
+// to the previous song free without holding a copy of everything ever opened
+const CACHE_LIMIT = 2
+
 function getDecoded(song: Song, onProgress: Progress): Promise<BufferCacheMap> {
-  let entry = bufferCache.get(song.videoId)
-  if (!entry) {
-    entry = loadBuffers(song, onProgress).catch((err) => {
-      bufferCache.delete(song.videoId)
-      throw err
-    })
-    bufferCache.set(song.videoId, entry)
+  const videoId = song.videoId
+  const cached = bufferCache.get(videoId)
+  if (cached) {
+    // re-insert so the entry is last again (Map iterates in insertion order)
+    bufferCache.delete(videoId)
+    bufferCache.set(videoId, cached)
+    return cached
+  }
+  const entry = loadBuffers(song, onProgress).catch((err) => {
+    bufferCache.delete(videoId)
+    throw err
+  })
+  bufferCache.set(videoId, entry)
+  while (bufferCache.size > CACHE_LIMIT) {
+    const oldest = bufferCache.keys().next()
+    if (oldest.done) break
+    bufferCache.delete(oldest.value)
   }
   return entry
+}
+
+/* A split peaks at several GB in the engine process, so whatever is left over
+   from browsing has to go when one starts — otherwise the song you last played
+   is what gets the next separation killed. */
+export function releaseBufferCache(): void {
+  bufferCache.clear()
+  engine.release()
 }
 
 interface Props {
@@ -166,6 +192,13 @@ export function Player({ song, settings }: Props): React.ReactElement {
   const [lyricsForm, setLyricsForm] = useState<{ artist: string; track: string } | null>(null)
 
   const [vols, setVols] = useState<Partial<Record<StemId, number>>>({})
+  const [pans, setPans] = useState<StemPanMap>({})
+  const [panError, setPanError] = useState<string | null>(null)
+  const pansRef = useRef<StemPanMap>({})
+  const panSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingPan = useRef<{ videoId: string; pans: StemPanMap } | null>(null)
+  const panGeneration = useRef(0)
+  const panRevision = useRef(0)
   const [mutes, setMutes] = useState<Set<StemId>>(new Set())
   const [solos, setSolos] = useState<Set<StemId>>(new Set())
   const [master, setMaster] = useState(0.9)
@@ -198,6 +231,10 @@ export function Player({ song, settings }: Props): React.ReactElement {
   })
 
   useEffect(() => {
+    const generation = ++panGeneration.current
+    setPans({})
+    pansRef.current = {}
+    setPanError(null)
     posRef.current = 0
     setPlaying(false)
     playingRef.current = false
@@ -214,13 +251,33 @@ export function Player({ song, settings }: Props): React.ReactElement {
     engine.stopAll()
 
     let cancelled = false
+    const flushPan = (): void => {
+      if (panSaveTimer.current !== null) clearTimeout(panSaveTimer.current)
+      panSaveTimer.current = null
+      const pending = pendingPan.current
+      pendingPan.current = null
+      if (pending) void window.stemkit.setStemPan(pending.videoId, pending.pans).catch(() => {})
+    }
+    window.addEventListener('beforeunload', flushPan)
     setDecoding(true)
     setLoaded(null)
-    getDecoded(song, (done, total, note) => {
-      if (!cancelled) setLoaded((prev) => ({ done, total, note: note === undefined ? prev?.note : note || undefined }))
-    })
-      .then((decoded) => {
+    Promise.all([
+      getDecoded(song, (done, total, note) => {
+        if (!cancelled) setLoaded((prev) => ({ done, total, note: note === undefined ? prev?.note : note || undefined }))
+      }),
+      window.stemkit.getStemPan(song.videoId).catch(() => {
+        if (!cancelled) setPanError('Could not load saved pan settings. Using center.')
+        return {} as StemPanMap
+      })
+    ])
+      .then(([decoded, savedPan]) => {
         if (cancelled) return
+        const initialPans = Object.fromEntries(Object.keys(decoded).map((id) => {
+          const value = savedPan[id as StemId]
+          return [id, typeof value === 'number' && Number.isFinite(value) ? Math.max(-1, Math.min(1, value)) : 0]
+        })) as StemPanMap
+        pansRef.current = initialPans
+        setPans(initialPans)
         setBuffers(decoded)
         engine.setBuffers(decoded)
         setVols(Object.fromEntries(Object.keys(decoded).map((id) => [id, 1])))
@@ -236,6 +293,9 @@ export function Player({ song, settings }: Props): React.ReactElement {
 
     return () => {
       cancelled = true
+      if (panGeneration.current === generation) ++panGeneration.current
+      window.removeEventListener('beforeunload', flushPan)
+      flushPan()
       engine.stopAll()
       hostRef.current?.destroy()
       hostRef.current = null
@@ -452,8 +512,31 @@ export function Player({ song, settings }: Props): React.ReactElement {
   }, [song.videoId])
 
   useEffect(() => {
-    engine.applyMix(vols, mutes, solos, master)
-  }, [vols, mutes, solos, master])
+    engine.applyMix(vols, mutes, solos, master, pans)
+  }, [vols, mutes, solos, master, pans])
+
+  const changePan = (id: StemId, value: number): void => {
+    const next = { ...pansRef.current, [id]: value }
+    pansRef.current = next
+    setPans(next)
+    const generation = panGeneration.current
+    const revision = ++panRevision.current
+    pendingPan.current = { videoId: song.videoId, pans: next }
+    if (panSaveTimer.current !== null) clearTimeout(panSaveTimer.current)
+    panSaveTimer.current = setTimeout(() => {
+      panSaveTimer.current = null
+      const pending = pendingPan.current
+      pendingPan.current = null
+      if (!pending) return
+      void window.stemkit.setStemPan(pending.videoId, pending.pans).then(() => {
+        if (generation === panGeneration.current && revision === panRevision.current) setPanError(null)
+      }).catch(() => {
+        if (generation === panGeneration.current && revision === panRevision.current) {
+          setPanError('Could not save pan settings. Your live pan is still applied.')
+        }
+      })
+    }, 250)
+  }
 
   useEffect(() => {
     if (!playing) return
@@ -558,16 +641,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
     void window.stemkit.exportAllStems(song.videoId)
   }, [song.videoId])
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.code === 'Space' && !(e.target instanceof HTMLInputElement)) {
-        e.preventDefault()
-        togglePlay()
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [togglePlay])
+
 
   const applyPreset = (p: PresetId): void => {
     setPreset(p)
@@ -580,23 +654,48 @@ export function Player({ song, settings }: Props): React.ReactElement {
       setSolos(new Set<StemId>((['drums', ...DRUM_KIT, 'bass'] as StemId[]).filter((id) => stemMeta.some((s) => s.id === id))))
   }
 
-  const toggleMute = (id: StemId): void => {
-    setPreset('custom')
-    const turningOn = !mutes.has(id)
-    if (turningOn && solos.has(id)) {
-      setSolos((prev) => {
+  const toggleMute = useCallback(
+    (id: StemId): void => {
+      setPreset('custom')
+      const turningOn = !mutes.has(id)
+      if (turningOn && solos.has(id)) {
+        setSolos((prev) => {
+          const next = new Set(prev)
+          next.delete(id)
+          return next
+        })
+      }
+      setMutes((prev) => {
         const next = new Set(prev)
-        next.delete(id)
+        if (next.has(id)) next.delete(id)
+        else next.add(id)
         return next
       })
+    },
+    [mutes, solos]
+  )
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.target instanceof HTMLInputElement) return
+      if (e.code === 'Space') {
+        e.preventDefault()
+        togglePlay()
+        return
+      }
+      const lane = STEM_KEYS.indexOf(e.key)
+      if (lane !== -1 && lane < stemMeta.length && !e.altKey && !e.ctrlKey && !e.metaKey) {
+        toggleMute(stemMeta[lane].id)
+      } else if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') {
+        if (decoding || decodeError) return
+        e.preventDefault()
+        const step = e.shiftKey ? 15 : 5
+        seekTo(posRef.current + (e.code === 'ArrowLeft' ? -step : step))
+      }
     }
-    setMutes((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
-  }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [togglePlay, toggleMute, stemMeta, seekTo, decoding, decodeError])
 
   // the stage view's chips: flip what is heard, whatever set the solos
   const toggleAudible = (id: StemId): void => {
@@ -974,6 +1073,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
             </div>
           )}
 
+          {panError && <p role="status" className="mt-3 text-xs text-amber-300">{panError}</p>}
           <div className="mt-4 space-y-2">
             {decoding
               ? [...Array(4)].map((_, i) => (
@@ -992,6 +1092,8 @@ export function Player({ song, settings }: Props): React.ReactElement {
                 getPosition={getPosition}
                 audible={isAudible(meta.id, mutes, solos)}
                 volume={vols[meta.id] ?? 1}
+                pan={pans[meta.id] ?? 0}
+                onPan={(value) => changePan(meta.id, value)}
                 muted={mutes.has(meta.id)}
                 soloed={solos.has(meta.id)}
                 onToggleMute={() => toggleMute(meta.id)}

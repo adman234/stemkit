@@ -6,14 +6,16 @@
   "author": "daniel",
   "private": true,
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "scripts": {
     "dev": "node scripts/run.cjs dev",
     "build": "node scripts/run.cjs build",
+    "test": "node --test --experimental-strip-types src/main/data-dir.test.ts",
     "typecheck:node": "node scripts/run.cjs typecheck:node",
     "typecheck:web": "node scripts/run.cjs typecheck:web",
     "typecheck": "node scripts/run.cjs typecheck",
+    "test:audio": "node scripts/run.cjs test:audio",
     "dist": "node scripts/run.cjs dist",
     "dist:win": "node scripts/run.cjs dist:win",
     "dist:linux": "node scripts/run.cjs dist:linux",
@@ -43,5 +45,5 @@
     "typescript": "^5.7.2",
     "vite": "^5.4.11"
   },
-  "version": "0.1.24"
+  "version": "0.2.0"
 }

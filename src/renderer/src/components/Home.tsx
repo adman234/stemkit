@@ -14,6 +14,9 @@ interface Props {
   onStart: (url: string, options: SplitOptions) => void
   // filePath is the upload token in the web version
   onStartLocal: (filePath: string, options: SplitOptions) => void
+  // mirrors the engine + instrument toggles out to App, which owns the
+  // window-wide drop target and has no selection state of its own
+  onOptions: (options: SplitOptions) => void
   onSelect: (videoId: string) => void
   onOpenSettings: () => void
   // what the Picture switch starts on (STEMKIT_PICTURE on the server)
@@ -84,6 +87,7 @@ export function Home({
   gpu,
   onStart,
   onStartLocal,
+  onOptions,
   onSelect,
   onOpenSettings,
   defaultPicture = 'thumbnail'
@@ -118,6 +122,9 @@ export function Home({
   // what a split would actually run with
   const picture = pictureChoice ?? defaultPicture
   const effective = { ...normalizeSplit(split), picture }
+  useEffect(() => {
+    onOptions(effective)
+  })
   const engine = engineInfo(effective.engine)
   const selected = new Set<StemId>(effective.stems)
   const hasStems = split.stems.length > 0
@@ -218,7 +225,7 @@ export function Home({
           Turn any track into stems.
         </h1>
         <p className="text-center text-white/45 mt-2.5 text-[14px]">
-          Search YouTube, paste a link or upload an audio file, then pick an engine and the instruments you want.
+          Search YouTube, paste a link, or upload or drag in an audio file, then pick an engine and the instruments you want.
         </p>
 
         <div className="mt-6 flex gap-2">

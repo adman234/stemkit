@@ -27,7 +27,9 @@ import { writeZip, zipSize, type ZipEntry } from './zip'
 import { loadSettings, migrateSettings, saveSettings } from '../main/settings'
 import {
   loadSongs,
+  loadStemPan,
   removeSong,
+  saveStemPan,
   songDir,
   sourceFile,
   stemFile,
@@ -307,6 +309,26 @@ route('POST', '/api/songs/:videoId/lyrics', async (req, _res, params) => {
   const hint =
     str(body.artist) || str(body.track) ? { artist: str(body.artist), track: str(body.track) } : undefined
   void findLyrics(videoIdParam(params), hint)
+  return null
+})
+
+// stereo pan per stem, saved beside the song (upstream's pan.json)
+route('GET', '/api/songs/:videoId/pan', async (_req, _res, params) => {
+  try {
+    return loadStemPan(videoIdParam(params))
+  } catch {
+    throw new HttpError(404, 'Unknown song')
+  }
+})
+
+route('PUT', '/api/songs/:videoId/pan', async (req, _res, params) => {
+  const videoId = videoIdParam(params)
+  const body = await readJson(req)
+  try {
+    saveStemPan(videoId, body)
+  } catch {
+    throw new HttpError(404, 'Unknown song')
+  }
   return null
 })
 

@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AppSettings, EnvStatus, JobProgress, JobStage, Song, SplitOptions, UpdateEvent } from '../../shared/types'
 import { splitTag } from '../../shared/engines'
 import { parseVideoId } from '../../shared/url'
-import { localSongId, isLocalId } from '../../shared/local'
+import { isAudioPath, isLocalId, localSongId } from '../../shared/local'
 import { Sidebar } from './components/Sidebar'
 import { Home } from './components/Home'
 import { Processing } from './components/Processing'
-import { Player } from './components/Player'
+import { Player, releaseBufferCache } from './components/Player'
 import { Setup } from './components/Setup'
 import { Settings } from './components/Settings'
+import { About } from './components/About'
 import { LogoMark } from './components/Icons'
 
 interface EnvLog {
@@ -54,6 +55,13 @@ export default function App(): React.ReactElement {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [navOpen, setNavOpen] = useState(false)
+  const [aboutOpen, setAboutOpen] = useState(false)
+  const [dropping, setDropping] = useState(false)
+  const [notice, setNotice] = useState<string | null>(null)
+  // what a dropped file should be split with: Home pushes its current engine
+  // and instrument selection down, so a drop honours the same toggles the
+  // buttons use without owning that state here
+  const startOpts = useRef<SplitOptions | null>(null)
 
   useEffect(() => {
     void window.stemkit.envStatus().then(setStatus)
@@ -70,6 +78,10 @@ export default function App(): React.ReactElement {
         void window.stemkit.listSongs().then(setSongs)
       } else if (ev.data.message === 'Cancelled') {
         setJobs((prev) => withoutKey(prev, ev.data.videoId))
+      } else if (!ev.data.videoId) {
+        // rejections that have no song to attach to (unplayable drop, missing
+        // file): a toast, since an empty id would key a blank library row
+        setNotice(ev.data.message)
       } else {
         setJobs((prev) => withoutKey(prev, ev.data.videoId))
         setErrors((prev) => ({ ...prev, [ev.data.videoId]: ev.data.message }))
@@ -92,11 +104,13 @@ export default function App(): React.ReactElement {
     const offNotes = window.stemkit.onNotesEvent?.((ev) => {
       if (ev.ready) void window.stemkit.listSongs().then(setSongs)
     })
+    const offAbout = window.stemkit.onShowAbout?.(() => setAboutOpen(true))
     void window.stemkit.getAppVersion().then(setAppVersion)
     return () => {
       offJob()
       offEnv()
       offUpdate()
+      offAbout?.()
       offSettings()
       offVideo?.()
       offChords?.()
@@ -114,6 +128,7 @@ export default function App(): React.ReactElement {
     async (url: string, options: SplitOptions): Promise<void> => {
       const vid = parseVideoId(url)
       if (!vid) return
+      releaseBufferCache()
       setActiveId(vid)
       setLastStart({ kind: 'url', url, options })
       setErrors((prev) => withoutKey(prev, vid))
@@ -131,12 +146,18 @@ export default function App(): React.ReactElement {
   )
 
   const startLocal = useCallback(
-    async (filePath: string, options: SplitOptions): Promise<void> => {
+    async (
+      filePath: string,
+      options: SplitOptions,
+      // a multi-file drop queues every file but only the first takes the view
+      focus = true
+    ): Promise<void> => {
       const id = localSongId(filePath)
       // a local file has no video to download beside the stems
       const local = { ...options, picture: 'thumbnail' as const }
       const model = splitTag(local)
-      setActiveId(id)
+      releaseBufferCache()
+      if (focus) setActiveId(id)
       setLastStart({ kind: 'local', filePath, options: local })
       setErrors((prev) => withoutKey(prev, id))
       setJobs((prev) =>
@@ -148,6 +169,123 @@ export default function App(): React.ReactElement {
     },
     []
   )
+
+  const setStartOptions = useCallback((options: SplitOptions): void => {
+    startOpts.current = options
+  }, [])
+
+  const ready = !!status?.ready
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = setTimeout(() => setNotice(null), 6000)
+    return () => clearTimeout(timer)
+  }, [notice])
+
+  useEffect(() => {
+    let depth = 0
+    // Files = something off disk, text/uri-list = a dragged link. A plain
+    // text/plain drag is a selection inside the app, which stays untouched
+    const droppable = (e: DragEvent): boolean => {
+      const types = e.dataTransfer ? Array.from(e.dataTransfer.types) : []
+      return types.includes('Files') || types.includes('text/uri-list')
+    }
+
+    /* dropping without preventDefault navigates the window to file:///… and
+       takes the whole app down with it, so every handler here claims the
+       event first and only then decides what to do with it */
+    const onDragEnter = (e: DragEvent): void => {
+      if (!droppable(e)) return
+      e.preventDefault()
+      depth += 1
+      setDropping(true)
+    }
+    const onDragOver = (e: DragEvent): void => {
+      if (!droppable(e)) return
+      e.preventDefault()
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+    }
+    const onDragLeave = (): void => {
+      depth = Math.max(0, depth - 1)
+      if (depth === 0) setDropping(false)
+    }
+    const onDrop = (e: DragEvent): void => {
+      e.preventDefault()
+      depth = 0
+      setDropping(false)
+      const dt = e.dataTransfer
+      if (!dt) return
+      // dropping into the search field is an edit, not a request to split
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
+      if (!ready) {
+        setNotice('StemKit is still getting ready — try again once setup finishes')
+        return
+      }
+      const options = startOpts.current
+      /* checked before either branch: an empty pick means "default 4-stem
+         split" downstream, so a link would start a split nobody asked for */
+      if (!options || options.stems.length === 0) {
+        setNotice('Pick at least one instrument first')
+        return
+      }
+      const files = Array.from(dt.files)
+      if (files.length === 0) {
+        const link = (dt.getData('text/uri-list') || '').split(/[\r\n]/)[0]
+        if (link && parseVideoId(link)) void startUrl(link, options)
+        else setNotice('Drop audio files or a YouTube link')
+        return
+      }
+      const paths: string[] = []
+      const uploads: File[] = []
+      const skipped: string[] = []
+      for (const file of files) {
+        // web version: a browser never sees the file's path, so the file is
+        // uploaded and its token stands in for the path
+        if (!window.stemkit.getPathForFile) {
+          if (isAudioPath(file.name)) uploads.push(file)
+          else skipped.push(file.name || 'that file')
+          continue
+        }
+        let path = ''
+        try {
+          path = window.stemkit.getPathForFile(file)
+        } catch {
+          path = ''
+        }
+        if (path && isAudioPath(path)) paths.push(path)
+        else skipped.push(file.name || 'that file')
+      }
+      if (paths.length === 0 && uploads.length === 0) {
+        setNotice(
+          skipped.length
+            ? `Can’t split ${skipped.join(', ')} — use mp3, wav, flac, m4a, ogg or opus`
+            : 'Drop audio files (mp3, wav, flac, m4a…)'
+        )
+        return
+      }
+      if (skipped.length > 0) setNotice(`Skipped ${skipped.join(', ')} — not audio`)
+      paths.forEach((path, i) => {
+        void startLocal(path, options, i === 0)
+      })
+      uploads.forEach((file, i) => {
+        void window.stemkit
+          .uploadAudioFile?.(file)
+          .then((token) => startLocal(token, options, i === 0))
+          .catch((err: unknown) => setNotice(err instanceof Error ? err.message : String(err)))
+      })
+    }
+
+    window.addEventListener('dragenter', onDragEnter)
+    window.addEventListener('dragover', onDragOver)
+    window.addEventListener('dragleave', onDragLeave)
+    window.addEventListener('drop', onDrop)
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter)
+      window.removeEventListener('dragover', onDragOver)
+      window.removeEventListener('dragleave', onDragLeave)
+      window.removeEventListener('drop', onDrop)
+    }
+  }, [ready, startLocal, startUrl])
 
   const cancelSelectedJob = useCallback(
     (videoId: string): void => {
@@ -178,6 +316,19 @@ export default function App(): React.ReactElement {
     },
     [jobs]
   )
+
+  const clearAll = useCallback(async (): Promise<void> => {
+    if (!songs.length) return
+    // main cancels anything mid-split before wiping the folders
+    if (!window.confirm(`Remove all ${songs.length} songs and delete their stems from this computer?`))
+      return
+    releaseBufferCache()
+    setJobs({})
+    setErrors({})
+    setActiveId(null)
+    await window.stemkit.clearLibrary?.()
+    setSongs(await window.stemkit.listSongs())
+  }, [songs.length])
 
   const activeSong = useMemo(
     () => songs.find((s) => s.videoId === activeId) ?? null,
@@ -232,21 +383,27 @@ export default function App(): React.ReactElement {
 
   if (!status) {
     return (
-      <div className="h-full flex items-center justify-center">
-        <LogoMark className="w-12 h-12 animate-pulse" />
-      </div>
+      <>
+        <div className="h-full flex items-center justify-center">
+          <LogoMark className="w-12 h-12 animate-pulse" />
+        </div>
+        {aboutOpen && <About version={appVersion} onClose={() => setAboutOpen(false)} />}
+      </>
     )
   }
 
   if (!status.ready) {
     return (
-      <Setup
-        status={status}
-        logs={envLogs}
-        onInstall={() => {
-          void window.stemkit.envBootstrap().then(() => window.stemkit.envStatus().then(setStatus))
-        }}
-      />
+      <>
+        <Setup
+          status={status}
+          logs={envLogs}
+          onInstall={() => {
+            void window.stemkit.envBootstrap().then(() => window.stemkit.envStatus().then(setStatus))
+          }}
+        />
+        {aboutOpen && <About version={appVersion} onClose={() => setAboutOpen(false)} />}
+      </>
     )
   }
 
@@ -278,6 +435,7 @@ export default function App(): React.ReactElement {
         defaultPicture={settings?.downloadVideo ? 'video' : 'thumbnail'}
         onStart={(u, o) => void startUrl(u, o)}
         onStartLocal={(path, o) => void startLocal(path, o)}
+        onOptions={setStartOptions}
         onSelect={(id) => setActiveId(id)}
         onOpenSettings={() => {
           void window.stemkit.envStatus().then(setStatus)
@@ -316,6 +474,7 @@ export default function App(): React.ReactElement {
           setNavOpen(false)
         }}
         onDelete={(id) => void deleteSong(id)}
+        onClearAll={window.stemkit.clearLibrary ? () => void clearAll() : undefined}
         onAdd={() => {
           setActiveId(null)
           setNavOpen(false)
@@ -336,6 +495,26 @@ export default function App(): React.ReactElement {
           onClose={() => setSettingsOpen(false)}
         />
       )}
+      {/* pointer-events-none: the drop has to land on the window listeners,
+          not on the hint itself, or enter/leave would flicker over it */}
+      {dropping && (
+        <div className="fixed inset-0 z-50 p-6 pointer-events-none">
+          <div className="h-full w-full rounded-3xl border-2 border-dashed border-violet-300/70 bg-violet-500/[0.12] flex flex-col items-center justify-center gap-2">
+            <p className="text-lg font-semibold text-violet-100">Drop to split</p>
+            <p className="text-[13px] text-white/60">
+              audio files (mp3, wav, flac, m4a…) or a YouTube link
+            </p>
+          </div>
+        </div>
+      )}
+      {notice && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 max-w-[720px] rise-in">
+          <div className="rounded-xl border border-rose-400/25 bg-rose-500/10 px-4 py-2.5 text-[13px] text-rose-200 break-words">
+            {notice}
+          </div>
+        </div>
+      )}
+      {aboutOpen && <About version={appVersion} onClose={() => setAboutOpen(false)} />}
     </div>
   )
 }
