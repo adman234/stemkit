@@ -72,11 +72,16 @@ export { searchYouTube } from '../main/pipeline'
    can promise: AAC leans on a decoder from the operating system, while Opus
    is carried by the browser itself wherever it runs. The client asks for
    whichever its own browser is surest about. */
-export type PreviewFormat = 'm4a' | 'webm'
+export type PreviewFormat = 'm4a' | 'webm' | 'ogg'
 
+/* The ogg copy is the same Opus as the webm one in a container that the
+   player's own WebAssembly decoder reads. Firefox on Android decodes audio
+   slowly enough (around 4s a stem, against 1s for the same phone's Chrome)
+   that it uses that decoder instead of its own. */
 const PREVIEW_ARGS: Record<PreviewFormat, string[]> = {
   m4a: ['-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart'],
-  webm: ['-c:a', 'libopus', '-b:a', '128k']
+  webm: ['-c:a', 'libopus', '-b:a', '128k'],
+  ogg: ['-c:a', 'libopus', '-b:a', '128k']
 }
 
 export function previewPath(videoId: string, stem: string, format: PreviewFormat = 'm4a'): string {
@@ -107,7 +112,13 @@ export function ensurePreview(
       }
       mkdirSync(dirname(out), { recursive: true })
       const partial = `${out}.part.${format}`
-      const child = spawn(ffmpeg, ['-y', '-i', source, ...PREVIEW_ARGS[format], partial])
+      // a song that already has the webm copy only needs its Opus rewrapped
+      const webm = previewPath(videoId, stem, 'webm')
+      const args =
+        format === 'ogg' && existsSync(webm)
+          ? ['-y', '-i', webm, '-c', 'copy', '-f', 'ogg', partial]
+          : ['-y', '-i', source, ...PREVIEW_ARGS[format], partial]
+      const child = spawn(ffmpeg, args)
       let stderr = ''
       child.stderr?.on('data', (chunk: Buffer) => {
         stderr = (stderr + chunk.toString()).slice(-400)

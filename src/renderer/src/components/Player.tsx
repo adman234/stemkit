@@ -51,9 +51,12 @@ type Progress = (done: number, total: number, note?: string) => void
 
 const bufferCache = new Map<string, Promise<BufferCacheMap>>()
 
-/* Fetch and decode a stem, then the next one. Loading them all at once needs
-   every encoded stem and every decoded stem in memory together, which a phone
-   will not survive on a song split into a dozen parts */
+/* Fetch and decode the stems a few at a time. Decoding is the slow part on a
+   phone, and run side by side the stems spread across its cores: six stems
+   took 1.9s together on an Android phone's Chrome against about 0.7s each one
+   after another. A cap stays because every stem in flight holds its encoded
+   and decoded copies at once, which a song split into a dozen parts would
+   otherwise multiply. */
 async function loadBuffers(song: Song, onProgress: Progress): Promise<BufferCacheMap> {
   const stems = song.stems?.length ? song.stems : DEFAULT_STEMS
   const fetchStem = window.stemkit.getStemBuffer
@@ -69,48 +72,63 @@ async function loadBuffers(song: Song, onProgress: Progress): Promise<BufferCach
   const out: BufferCacheMap = {}
   const failed: string[] = []
   let bytes = 0
-  let used = ''
+  let done = 0
+  const used = new Set<string>()
   const started = performance.now()
-  for (let i = 0; i < stems.length; i++) {
-    // the first stem can wait on the server making its playback copy, which
-    // happens once per song: say so rather than looking stuck
-    const slow = setTimeout(() => {
-      onProgress(i, stems.length, 'the server is preparing this song for playback')
-    }, 3000)
+  // the first stems can wait on the server making its playback copies, which
+  // happens once per song: say so rather than looking stuck
+  const slow = setTimeout(() => {
+    if (done === 0) onProgress(0, stems.length, 'the server is preparing this song for playback')
+  }, 3000)
+
+  const loadOne = async (stem: string): Promise<void> => {
     const tried: string[] = []
-    try {
-      for (const format of formats) {
-        let loadedStem
-        // decoding detaches the bytes, so their size is counted first
-        let size = 0
-        try {
-          loadedStem = await fetchStem(song.videoId, stems[i], format)
-          size = loadedStem.bytes.byteLength
-          out[stems[i] as StemId] = await decodeStem(loadedStem.bytes.buffer as ArrayBuffer)
-        } catch (err) {
-          const why = err instanceof Error ? err.message : String(err)
-          tried.push(`${format}: ${why}`)
-          if (loadedStem) console.warn(`[stemkit] ${stems[i]} would not decode as ${format} (${why})`)
-          continue
-        }
-        bytes += size
-        used = format
-        break
+    for (const format of formats) {
+      let loadedStem
+      // decoding detaches the bytes, so their size is counted first
+      let size = 0
+      try {
+        loadedStem = await fetchStem(song.videoId, stem, format)
+        size = loadedStem.bytes.byteLength
+        out[stem as StemId] = await decodeStem(loadedStem.bytes.buffer as ArrayBuffer)
+      } catch (err) {
+        const why = err instanceof Error ? err.message : String(err)
+        tried.push(`${format}: ${why}`)
+        if (loadedStem) console.warn(`[stemkit] ${stem} would not decode as ${format} (${why})`)
+        continue
       }
-    } finally {
-      clearTimeout(slow)
+      bytes += size
+      used.add(format)
+      break
     }
     // a stem no format could play is worth naming; the rest still play
-    if (!out[stems[i] as StemId]) failed.push(`${stems[i]} (${tried.join(', ')})`)
+    if (!out[stem as StemId]) failed.push(`${stem} (${tried.join(', ')})`)
+    done++
     const seconds = (performance.now() - started) / 1000
-    const summary = `${(bytes / 1048576).toFixed(0)} MB in ${seconds.toFixed(0)}s · ${used || 'nothing'}${
-      used === 'wav' ? ' · full quality audio, which is slower to load' : ''
+    const formatsUsed = [...used].join('+')
+    const summary = `${(bytes / 1048576).toFixed(0)} MB in ${seconds.toFixed(1)}s · ${formatsUsed || 'nothing'}${
+      used.has('wav') ? ' · full quality audio, which is slower to load' : ''
     }`
-    onProgress(i + 1, stems.length, failed.length ? `${summary} · ${failed.length} failed` : summary)
+    onProgress(done, stems.length, failed.length ? `${summary} · ${failed.length} failed` : summary)
+  }
+
+  const lanes = Math.max(2, Math.min(6, (navigator.hardwareConcurrency || 4) - 1))
+  let next = 0
+  try {
+    await Promise.all(
+      Array.from({ length: Math.min(lanes, stems.length) }, async () => {
+        while (next < stems.length) await loadOne(stems[next++])
+      })
+    )
+  } finally {
+    clearTimeout(slow)
   }
   if (failed.length && !Object.keys(out).length) throw new Error(failed.join(' · '))
   if (failed.length) onProgress(stems.length, stems.length, `could not play ${failed.join(' · ')}`)
-  return out
+  // stems finish in any order; hand them back in the song's own
+  const ordered: BufferCacheMap = {}
+  for (const stem of stems) if (out[stem as StemId]) ordered[stem as StemId] = out[stem as StemId]
+  return ordered
 }
 
 // one decoded song is a few hundred MB of Float32 PCM sitting in the renderer,

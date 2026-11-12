@@ -33,19 +33,28 @@ const noOpus = (type) => !type.includes('opus')
 const checks = []
 const first = (ua, canPlay = everything) => playbackFormats(ua, canPlay)[0]
 
-checks.push(['firefox is sent to its own Opus decoder', first(FIREFOX) === 'webm'])
-checks.push(['firefox on android too, which is where it matters', first(FIREFOX_ANDROID) === 'webm'])
+checks.push(['firefox is sent to the ogg copy for the WebAssembly decoder', first(FIREFOX) === 'ogg'])
+checks.push(['firefox on android too, which is where it matters', first(FIREFOX_ANDROID) === 'ogg'])
+checks.push([
+  'firefox falls back to its own Opus decoder next',
+  playbackFormats(FIREFOX, everything)[1] === 'webm'
+])
+checks.push([
+  'firefox without WebAssembly goes straight to its own Opus decoder',
+  playbackFormats(FIREFOX, everything, false)[0] === 'webm'
+])
+checks.push(['chrome is not sent the ogg copy', !playbackFormats(CHROME, everything).includes('ogg')])
 checks.push(['chrome keeps the AAC copy', first(CHROME) === 'm4a'])
 checks.push(['safari keeps the AAC copy', first(SAFARI) === 'm4a'])
 // FxiOS is WebKit underneath, and may not take Opus
 checks.push(['firefox on ios is not treated as firefox', first(FIREFOX_IOS) === 'm4a'])
 
 // a browser that will not claim Opus is not offered it first
-checks.push(['a browser without Opus is left on AAC', first(FIREFOX, noOpus) === 'm4a'])
+checks.push(['a browser without Opus is left on AAC', playbackFormats(FIREFOX, noOpus, false)[0] === 'm4a'])
 
-for (const [name, ua] of [['firefox', FIREFOX], ['chrome', CHROME]]) {
+for (const [name, ua, count] of [['firefox', FIREFOX, 4], ['chrome', CHROME, 3]]) {
   const formats = playbackFormats(ua, everything)
-  checks.push([`${name} still has every format to fall back on`, formats.length === 3])
+  checks.push([`${name} still has every format to fall back on`, formats.length === count])
   checks.push([`${name} ends on the WAV, which cannot be refused`, formats[formats.length - 1] === 'wav'])
 }
 

@@ -1,4 +1,5 @@
 import type { StemId, StemPanMap } from '../../../shared/types'
+import { decodeOggOpus, isOgg } from './opus'
 
 export type BufferMap = Partial<Record<StemId, AudioBuffer>>
 
@@ -101,6 +102,13 @@ export async function decodeStem(bytes: ArrayBuffer): Promise<AudioBuffer> {
     try {
       return toAudioBuffer(ctx, readWav(bytes))
     } catch {}
+  }
+  if (isOgg(bytes)) {
+    try {
+      return toAudioBuffer(ctx, await decodeOggOpus(bytes.slice(0)))
+    } catch (err) {
+      console.warn('[stemkit] WebAssembly Opus decode failed, trying the browser', err)
+    }
   }
   return ctx.decodeAudioData(bytes)
 }

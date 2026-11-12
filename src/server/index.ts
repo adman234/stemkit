@@ -382,7 +382,8 @@ route('GET', '/api/songs/:videoId/stems', async (_req, _res, params) => {
    split before playback copies existed, or in a format not asked for before */
 const PREVIEW_TYPES: Record<PreviewFormat, string> = {
   m4a: 'audio/mp4',
-  webm: 'audio/webm'
+  webm: 'audio/webm',
+  ogg: 'audio/ogg'
 }
 
 async function servePreview(
@@ -412,6 +413,10 @@ route('GET', '/api/songs/:videoId/stems/:stem.m4a', (req, res, params) =>
 
 route('GET', '/api/songs/:videoId/stems/:stem.webm', (req, res, params) =>
   servePreview(req, res, params, 'webm')
+)
+
+route('GET', '/api/songs/:videoId/stems/:stem.ogg', (req, res, params) =>
+  servePreview(req, res, params, 'ogg')
 )
 
 route('GET', '/api/songs/:videoId/stems/:stem', async (req, res, params, url) => {

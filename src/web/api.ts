@@ -133,7 +133,11 @@ const api: StemKitApi = {
   },
   stemFormats: () => {
     const probe = document.createElement('audio')
-    return playbackFormats(navigator.userAgent, (type) => probe.canPlayType(type) !== '')
+    return playbackFormats(
+      navigator.userAgent,
+      (type) => probe.canPlayType(type) !== '',
+      typeof WebAssembly === 'object' && typeof Worker === 'function'
+    )
   },
 
   getStemBuffer: async (videoId, stem, format = 'm4a') => {

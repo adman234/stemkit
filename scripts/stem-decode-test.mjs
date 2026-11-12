@@ -67,6 +67,9 @@ await build({
   bundle: true,
   format: 'esm',
   platform: 'neutral',
+  // the WebAssembly Opus decoder is loaded on demand and only for ogg bytes,
+  // which these WAV tests never hand over
+  external: ['ogg-opus-decoder'],
   logLevel: 'error'
 })
 const { decodeStem } = await import(pathToFileURL(bundle).href)
