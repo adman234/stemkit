@@ -13,6 +13,12 @@ export function audioContext(): AudioContext {
   return shared
 }
 
+// whether any engine is playing, so a page reload is never forced mid-song
+let anyPlaying = false
+export function isPlaying(): boolean {
+  return anyPlaying
+}
+
 interface Pcm {
   channels: Float32Array[]
   sampleRate: number
@@ -209,6 +215,7 @@ export class StemEngine {
   setPlaying(playing: boolean, time: number): void {
     if (playing) this.resume()
     this.playing = playing
+    anyPlaying = playing
     this.align(time)
   }
 
@@ -267,6 +274,7 @@ export class StemEngine {
 
   stopAll(): void {
     this.playing = false
+    anyPlaying = false
     this.stopSources()
   }
 

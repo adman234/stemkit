@@ -2,3 +2,4 @@
 // runs unchanged on top of the HTTP API
 import './api'
 import '../renderer/src/main'
+import './fresh'
