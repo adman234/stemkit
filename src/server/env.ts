@@ -86,6 +86,10 @@ export function msstScript(): string {
   return join(APP_DIR, 'python', 'msst.py')
 }
 
+export function keyScript(): string {
+  return join(APP_DIR, 'python', 'key.py')
+}
+
 export function chordsScript(): string {
   return join(APP_DIR, 'python', 'chords.py')
 }

@@ -30,7 +30,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # the image is only built from code that typechecks and passes its tests
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run web:typecheck
+      - run: npm run test:audio
+      - run: npm run web:test
+
   image:
+    needs: checks
     runs-on: ubuntu-latest
     timeout-minutes: 90
     # cuda is the main image; rocm is the AMD one, tagged with a -rocm suffix

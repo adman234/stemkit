@@ -12,6 +12,7 @@ type UsedByDesktopModules =
   | 'venvYtDlp'
   | 'separateScript'
   | 'roformerScript'
+  | 'keyScript'
   | 'modelsDir'
   | 'songsDir'
   | 'ensureEngineDeps'

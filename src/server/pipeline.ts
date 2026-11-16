@@ -58,6 +58,7 @@ import {
   wavDuration
 } from '../main/library'
 import { cacheThumbnail } from '../main/thumbs'
+import { keyInputs, runKeyScript, withOverride } from '../main/keydetect'
 
 export { searchYouTube } from '../main/pipeline'
 
@@ -701,6 +702,14 @@ async function splitMix(
     rmSync(join(dir, 'instrumental.wav'), { force: true })
     rmSync(join(dir, 'studio-vocals'), { recursive: true, force: true })
 
+    // upstream's key detection reads the float WAVs, so it runs before they
+    // are compressed; it never throws, a failure just leaves the key unknown
+    progress(job, 'finalize', 0, 'Detecting key')
+    const detected = await runKeyScript(keyInputs(videoId, expected))
+    if (!alive(job)) return
+    // re-splitting must not lose a key corrected by hand
+    const key = withOverride(detected, loadSongs().find((s) => s.videoId === videoId)?.key)
+
     // chords and the drum kit have read the float WAVs by now, so they can
     // be stored the way the container is set up to keep them
     if (STEM_FORMAT !== 'wav') {
@@ -719,6 +728,7 @@ async function splitMix(
       stems: expected,
       took: Math.round((Date.now() - meta.startedAt) / 1000),
       options: { ...options, picture },
+      key,
       ...(meta.artist ? { artist: meta.artist } : {}),
       ...(meta.track ? { track: meta.track } : {}),
       ...(meta.album ? { album: meta.album } : {}),

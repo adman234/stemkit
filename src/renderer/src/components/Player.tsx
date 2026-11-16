@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { AppSettings, ChordData, LyricsData, NoteData, Song, StemId, StemPanMap } from '../../../shared/types'
+import type { AppSettings, ChordData, LyricsData, NoteData, Song, SongKey, StemId, StemPanMap } from '../../../shared/types'
 import { DEFAULT_STEMS } from '../../../shared/types'
 import { decodeStem, engine, decodePayload, type BufferMap } from '../lib/engine'
 import { buildStemMeta } from '../lib/stems'
@@ -26,6 +26,11 @@ import {
   splitLabel,
   type NoteModelId
 } from '../../../shared/engines'
+import { transposeKey } from '../../../shared/keys'
+import { shiftedTitle, transposeChordLabel, transposeChords, transposeNotes } from '../../../shared/transpose'
+import { ExportDialog } from './ExportDialog'
+import { exportMixed, exportOriginal, exportSeparate, type OnProgress } from '../lib/exporter'
+import { MIX_ID, initialSelection, type ExportMode } from '../../../shared/export-rules'
 
 // number keys 1-9 then 0 mute the lane shown in that position, top to bottom
 const STEM_KEYS = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0']
@@ -220,7 +225,15 @@ export function Player({ song, settings }: Props): React.ReactElement {
   const [mutes, setMutes] = useState<Set<StemId>>(new Set())
   const [solos, setSolos] = useState<Set<StemId>>(new Set())
   const [master, setMaster] = useState(0.9)
+  const [songKey, setSongKey] = useState<SongKey | undefined>(song.key)
+  const songIdRef = useRef(song.videoId)
+  songIdRef.current = song.videoId
+  const [semitones, setSemitones] = useState(0)
+  const [pitchError, setPitchError] = useState<string | null>(null)
   const [preset, setPreset] = useState<PresetId | 'custom'>('all')
+  const [exportOpen, setExportOpen] = useState(false)
+  // the dialog closes on success, so the result is reported here
+  const [exportNotice, setExportNotice] = useState<{ text: string; path: string } | null>(null)
 
   const stemMeta = useMemo(() => buildStemMeta(Object.keys(buffers) as StemId[]), [buffers])
 
@@ -266,9 +279,41 @@ export function Player({ song, settings }: Props): React.ReactElement {
     setMutes(new Set())
     setSolos(new Set())
     setPreset('all')
+    setExportOpen(false)
+    setExportNotice(null)
     engine.stopAll()
+    // the engine applies pitch lazily, so the UI keeps its own value
+    setSemitones(0)
+    setPitchError(null)
+    void engine.setPitch(0)
 
     let cancelled = false
+    window.stemkit
+      .getPitch(song.videoId)
+      .catch(() => 0)
+      .then((n) => {
+        if (cancelled) return
+        setSemitones(n)
+        return engine.setPitch(n).then(() => {
+          if (!cancelled) setPitchError(engine.pitchError)
+        })
+      })
+      .catch(() => {})
+    setSongKey(song.key)
+    // the songs list is not reloaded after detection or an override, so
+    // song.key can be stale: detectKey returns the stored key cheaply and
+    // only detects when none exists
+    const hadKey = song.key !== undefined
+    window.stemkit
+      .detectKey(song.videoId)
+      .then((k) => {
+        if (!cancelled) setSongKey(k)
+      })
+      .catch(() => {
+        // detection is best-effort: show '?' rather than analysing forever,
+        // but keep a key we already had
+        if (!cancelled && !hadKey) setSongKey({ detected: null })
+      })
     const flushPan = (): void => {
       if (panSaveTimer.current !== null) clearTimeout(panSaveTimer.current)
       panSaveTimer.current = null
@@ -655,11 +700,48 @@ export function Player({ song, settings }: Props): React.ReactElement {
     [song.videoId]
   )
 
-  const exportAllStems = useCallback((): void => {
-    void window.stemkit.exportAllStems(song.videoId)
-  }, [song.videoId])
+  // the web version has no folder to show: the export is a download, started
+  // right away, and the button fetches it again
+  const downloads = window.stemkit.exportDownloads === true
+  const finishExport = (text: string, path: string): void => {
+    setExportNotice({ text, path })
+    if (downloads) void window.stemkit.exportReveal(path).catch(() => {})
+  }
 
-
+  const runExport = async (
+    mode: ExportMode,
+    selected: Set<string>,
+    shifted: boolean,
+    onProgress: OnProgress
+  ): Promise<boolean> => {
+    const opts = {
+      videoId: song.videoId,
+      title: song.title,
+      stems: stemMeta.map((s) => s.id),
+      selected: [...selected],
+      vols,
+      pans,
+      semitones: shifted ? semitones : 0
+    }
+    // null means the user cancelled the picker. The original mix is exclusive
+    // in the dialog, so either button exports just that one file.
+    if (mode === 'mixed' || selected.has(MIX_ID)) {
+      const path = selected.has(MIX_ID)
+        ? await exportOriginal(opts, onProgress)
+        : await exportMixed(opts, onProgress)
+      if (path === null) return false
+      finishExport(downloads ? 'Export downloaded' : `Exported to ${path}`, path)
+      return true
+    }
+    const result = await exportSeparate(opts, onProgress)
+    if (result === null) return false
+    const files = result.count === 1 ? '1 file' : `${result.count} files`
+    finishExport(
+      downloads ? `Exported ${files} as a zip` : `Exported ${files} to ${result.path}`,
+      result.path
+    )
+    return true
+  }
 
   const applyPreset = (p: PresetId): void => {
     setPreset(p)
@@ -695,6 +777,8 @@ export function Player({ song, settings }: Props): React.ReactElement {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
+      // the dialog's buttons and checkboxes own Space and the number keys
+      if (exportOpen) return
       if (e.target instanceof HTMLInputElement) return
       if (e.code === 'Space') {
         e.preventDefault()
@@ -713,7 +797,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [togglePlay, toggleMute, stemMeta, seekTo, decoding, decodeError])
+  }, [togglePlay, toggleMute, stemMeta, seekTo, decoding, decodeError, exportOpen])
 
   // the stage view's chips: flip what is heard, whatever set the solos
   const toggleAudible = (id: StemId): void => {
@@ -746,6 +830,12 @@ export function Player({ song, settings }: Props): React.ReactElement {
     })
   }
 
+  // everything shown follows the pitch shift: the stored data stays as heard
+  const shownChords = useMemo(() => (chords ? transposeChords(chords, semitones) : null), [chords, semitones])
+  const shownNotes = useMemo(() => (notes ? transposeNotes(notes, semitones) : null), [notes, semitones])
+  const originalKey = songKey?.override ?? songKey?.detected ?? null
+  const shownKey = originalKey ? transposeKey(originalKey, semitones) : null
+
   return (
     <>
     {stage && (
@@ -756,7 +846,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
         getPosition={getPosition}
         onTogglePlay={togglePlay}
         onSeek={seekTo}
-        chords={chords}
+        chords={shownChords}
         lyrics={lyrics}
         lyricsBusy={lyricsBusy}
         canLyrics={canLyrics}
@@ -823,7 +913,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
                     {fmtTime(song.duration)} · added {addedLabel}
                     {song.took ? ` · split in ${fmtTime(song.took)}` : ''}
                     {song.options ? ` · ${splitLabel(song.options)}` : ''}
-                    {chords ? ` · ${chords.key.name}` : ''}
+                    {shownKey ? ` · ${shownKey}` : ''}
                   </p>
                   {loaded?.note && <p className="text-[11px] text-white/45 mt-1">{loaded.note}</p>}
                 </div>
@@ -918,12 +1008,12 @@ export function Player({ song, settings }: Props): React.ReactElement {
                   </button>
                 )}
                 <button
-                  onClick={exportAllStems}
-                  disabled={decoding || !!decodeError}
+                  onClick={() => setExportOpen(true)}
+                  disabled={decoding || !!decodeError || stemMeta.length === 0}
                   className={`${ACTION} disabled:opacity-40`}
                 >
                   <DownloadIcon className="w-4 h-4" />
-                  Export everything
+                  Export
                 </button>
                 {youtubeUrl && (
                   <button onClick={() => window.stemkit.openExternal(youtubeUrl)} className={ACTION}>
@@ -952,18 +1042,57 @@ export function Player({ song, settings }: Props): React.ReactElement {
             onPreset={applyPreset}
             master={master}
             onMaster={setMaster}
+            songKey={songKey}
+            semitones={semitones}
+            onSemitones={(n) => {
+              const id = song.videoId
+              setSemitones(n)
+              void engine
+                .setPitch(n)
+                .catch(() => {})
+                .then(() => {
+                  if (songIdRef.current === id) setPitchError(engine.pitchError)
+                })
+              void window.stemkit.setPitch(id, n).catch(() => {})
+            }}
+            onKeyOverride={(key) => {
+              const id = song.videoId
+              window.stemkit
+                .setKeyOverride(id, key)
+                .then((k) => {
+                  if (songIdRef.current === id) setSongKey(k)
+                })
+                .catch(() => {})
+            }}
+            onKeyRedetect={() => {
+              const id = song.videoId
+              const previous = songKey
+              // '…' while it runs, like the first detection
+              setSongKey(undefined)
+              window.stemkit
+                .detectKey(id, true)
+                .then((k) => {
+                  if (songIdRef.current === id) setSongKey(k)
+                })
+                .catch(() => {
+                  if (songIdRef.current === id) setSongKey(previous)
+                })
+            }}
             youtubeUrl={youtubeUrl ?? undefined}
           />
 
           {chords && chords.segments.length > 0 && (
             <ChordTimeline
-              chords={chords}
+              chords={shownChords ?? chords}
+              songKey={shownKey}
               duration={duration}
               getPosition={getPosition}
               onSeek={seekTo}
               onOverride={(start, label) => {
+                // picked in the shifted view, stored at the song's own pitch
+                const stored = label === null ? null : transposeChordLabel(label, -semitones)
                 void window.stemkit
-                  .setChordLabel?.(song.videoId, start, label)
+                  .setChordLabel?.(song.videoId, start, stored)
                   .then(setChords)
                   .catch((err) => setChordsError(err instanceof Error ? err.message : String(err)))
               }}
@@ -972,7 +1101,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
 
           {shownNoteStem && window.stemkit.getNotes && (
             <NoteRoll
-              data={notes && notes.stem === shownNoteStem ? notes : null}
+              data={shownNotes && shownNotes.stem === shownNoteStem ? shownNotes : null}
               stems={noteStems}
               stem={shownNoteStem}
               onStem={setNoteStem}
@@ -987,7 +1116,7 @@ export function Player({ song, settings }: Props): React.ReactElement {
               onSeek={seekTo}
               beats={chords?.beats}
               tempo={chords?.tempo}
-              title={song.title}
+              title={shiftedTitle(song.title, semitones)}
               videoId={song.videoId}
             />
           )}
@@ -1092,6 +1221,18 @@ export function Player({ song, settings }: Props): React.ReactElement {
           )}
 
           {panError && <p role="status" className="mt-3 text-xs text-amber-300">{panError}</p>}
+          {pitchError && <p role="status" className="mt-3 text-xs text-amber-300">{pitchError}</p>}
+          {exportNotice && (
+            <p role="status" className="mt-3 flex items-center gap-2 text-xs text-emerald-300">
+              <span className="min-w-0 break-all">{exportNotice.text}</span>
+              <button
+                onClick={() => void window.stemkit.exportReveal(exportNotice.path).catch(() => {})}
+                className="no-drag shrink-0 rounded-md px-2 py-0.5 text-white/70 hover:text-white hover:bg-white/10 transition-colors"
+              >
+                {downloads ? 'Download again' : 'Show in folder'}
+              </button>
+            </p>
+          )}
           <div className="mt-4 space-y-2">
             {decoding
               ? [...Array(4)].map((_, i) => (
@@ -1124,6 +1265,16 @@ export function Player({ song, settings }: Props): React.ReactElement {
           </div>
         </div>
       </div>
+      {exportOpen && (
+        <ExportDialog
+          stems={stemMeta}
+          initial={initialSelection(stemMeta.map((s) => s.id), mutes, solos)}
+          semitones={semitones}
+          originalKey={songKey?.override ?? songKey?.detected ?? null}
+          onClose={() => setExportOpen(false)}
+          onExport={runExport}
+        />
+      )}
     </div>
     </>
   )

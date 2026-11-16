@@ -15,7 +15,8 @@ import type {
   LyricsEvent,
   UpdateEvent,
   VideoEvent,
-  StemPanMap
+  StemPanMap,
+  SongKey
 } from '../shared/types'
 import { playbackFormats } from '../shared/playback'
 import { AUDIO_EXTENSIONS } from '../shared/local'
@@ -118,9 +119,9 @@ const api: StemKitApi = {
   deleteSong: async (videoId) => {
     await request('DELETE', `/api/songs/${encodeURIComponent(videoId)}`)
   },
-  getBuffers: async (videoId) => {
+  getBuffers: async (videoId, only) => {
     const id = encodeURIComponent(videoId)
-    const stems = await request<string[]>('GET', `/api/songs/${id}/stems`)
+    const stems = only ?? (await request<string[]>('GET', `/api/songs/${id}/stems`))
     const out: Record<string, Uint8Array> = {}
     await Promise.all(
       stems.map(async (stem) => {
@@ -163,9 +164,46 @@ const api: StemKitApi = {
     download(`/api/songs/${encodeURIComponent(videoId)}/stems/${encodeURIComponent(stem)}.wav?download=1`)
     return { saved: true }
   },
-  exportAllStems: async (videoId) => {
-    download(`/api/songs/${encodeURIComponent(videoId)}/export.zip`)
-    return { saved: true }
+  detectKey: (videoId, force) =>
+    request<SongKey>('POST', `/api/songs/${encodeURIComponent(videoId)}/key`, { force: force === true }),
+  setKeyOverride: (videoId, override) =>
+    request<SongKey>('PUT', `/api/songs/${encodeURIComponent(videoId)}/key`, { override }),
+  getPitch: async (videoId) =>
+    (await request<{ semitones: number }>('GET', `/api/songs/${encodeURIComponent(videoId)}/pitch`)).semitones,
+  setPitch: async (videoId, semitones) => {
+    await request('PUT', `/api/songs/${encodeURIComponent(videoId)}/pitch`, { semitones })
+  },
+  // the dialog renders in the browser; the server collects the files and
+  // hands them back as one download (the file, or a zip of the folder)
+  exportDownloads: true,
+  exportBegin: (kind, name) => request<{ token: string; path: string }>('POST', '/api/export', { kind, name }),
+  exportWrite: async (token, fileName, wav) => {
+    const query = fileName ? `?name=${encodeURIComponent(fileName)}` : ''
+    const res = await fetch(`/api/export/${encodeURIComponent(token)}/file${query}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: wav as BodyInit
+    })
+    if (!res.ok) {
+      let message = ''
+      try {
+        message = String((await res.json()).error ?? '')
+      } catch {}
+      throw new Error(message || `Export failed (HTTP ${res.status})`)
+    }
+    return `/api/export/${token}`
+  },
+  exportEnd: async (token) => {
+    await request('POST', `/api/export/${encodeURIComponent(token)}/end`)
+  },
+  exportReveal: async (path) => {
+    download(path)
+  },
+  getMix: async (videoId) => {
+    const res = await fetch(`/api/songs/${encodeURIComponent(videoId)}/mix`)
+    if (res.status === 404) return null
+    if (!res.ok) throw new Error(`Could not load the original mix (HTTP ${res.status})`)
+    return new Uint8Array(await res.arrayBuffer())
   },
   searchYouTube: (query) => request<SearchResult[]>('GET', `/api/search?q=${encodeURIComponent(query)}`),
   startJob: (url, model, stems, options) =>

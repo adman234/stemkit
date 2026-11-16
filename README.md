@@ -24,8 +24,12 @@ the desktop app, use [upstream's releases](https://github.com/danielravina/stemk
 - **Per-song engine and options**: a Best engine (BS-Roformer SW with real guitar and
   piano stems), studio vocals, a second pass and a drum kit split, alongside upstream's
   Demucs.
-- **Key and chord detection** with a zoomable chord timeline, hand corrections, and
-  guitar chord shapes on hover.
+- **Chord detection** with a zoomable chord timeline, hand corrections, and guitar chord
+  shapes on hover. The key comes from upstream's detection (editable), and runs on the
+  server right after a split.
+- **Pitch shift follows everything**: upstream's live pitch shift (up to 6 semitones
+  either way) also moves the chords, the key, the note roll and the tab (re-fingered
+  for the new pitch), and the MIDI and text tab downloads say the shift in their name.
 - **Note transcription and tab** of the guitar, bass, piano, vocal or other stem under
   the player: guitar and bass parts as scrolling tab in a choice of tunings, every stem
   as a piano roll, a top line view that picks the lead out of a guitar part, bends
@@ -46,7 +50,11 @@ the desktop app, use [upstream's releases](https://github.com/danielravina/stemk
   the HTTPS address; browsers only allow it on secure pages).
 - **Compact storage**: stems are kept as FLAC, about a tenth of the float WAVs the
   splitter makes, at a depth set per container.
-- **Browser export**: one stem as WAV, or every stem plus the original audio as a ZIP.
+- **Browser export**: upstream's export dialog (checked stems mixed into one file or
+  separately, with the mixer's volume and pan, at the original or shifted pitch). The
+  browser renders the audio, the server collects it, and it arrives as a download: the
+  file itself, or a ZIP for a separate export. One stem can still be saved as WAV from
+  its lane.
 - **Audio file uploads**: the folder button next to the search box uploads an mp3,
   wav, flac or other audio file from your device and splits it like a YouTube song
   (upstream's "split a local file", done over HTTP).

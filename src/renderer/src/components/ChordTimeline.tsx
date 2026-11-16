@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import type { ChordData, ChordSegment } from '../../../shared/types'
 import { shapesFor } from '../lib/guitar'
 import { ChordDiagram } from './ChordDiagram'
+import { keyName, parseKey } from '../../../shared/keys'
 import { ZoomResetIcon } from './Icons'
 import { fmtTime } from '../lib/format'
 import { useFrameSeek } from '../lib/seek'
@@ -19,6 +20,9 @@ import {
 
 interface Props {
   chords: ChordData
+  // the song's key (upstream's detection, or the user's pick), already shifted
+  // with the pitch; chords.json's own key is the fallback while it is unknown
+  songKey?: string | null
   duration: number
   getPosition: () => number
   onSeek: (seconds: number) => void
@@ -44,8 +48,16 @@ function shown(seg: ChordSegment): string {
   return seg.user ?? seg.label
 }
 
+// a major key's relative minor sits three semitones below it, and back
+function relativeKey(name: string): string | null {
+  const key = parseKey(name)
+  if (!key) return null
+  return key.mode === 'major' ? keyName(key.tonic - 3, 'minor') : keyName(key.tonic + 3, 'major')
+}
+
 export function ChordTimeline({
   chords,
+  songKey,
   duration,
   getPosition,
   onSeek,
@@ -234,10 +246,16 @@ export function ChordTimeline({
       <div className="flex items-baseline justify-between gap-4 mb-2 flex-wrap">
         <div className="flex items-baseline gap-2.5 min-w-0">
           <span className="text-[11px] font-semibold uppercase tracking-widest text-white/30">Key</span>
-          <span className="text-[14px] font-semibold">{key.name}</span>
-          <span className="text-[11px] text-white/35 truncate" title={`Alternative reading: ${key.alternative}`}>
-            {unsure ? `unsure, could be ${key.alternative}` : `or its relative, ${key.relative}`}
-          </span>
+          <span className="text-[14px] font-semibold">{songKey ?? key.name}</span>
+          {songKey ? (
+            relativeKey(songKey) && (
+              <span className="text-[11px] text-white/35 truncate">or its relative, {relativeKey(songKey)}</span>
+            )
+          ) : (
+            <span className="text-[11px] text-white/35 truncate" title={`Alternative reading: ${key.alternative}`}>
+              {unsure ? `unsure, could be ${key.alternative}` : `or its relative, ${key.relative}`}
+            </span>
+          )}
         </div>
         <div className="flex items-center gap-2 md:gap-3 shrink-0 text-[11px] text-white/35 font-mono flex-wrap">
           {chords.tempo ? <span>{Math.round(chords.tempo)} BPM</span> : null}

@@ -3,7 +3,9 @@ import { readFile, cp } from 'fs/promises'
 import { spawn } from 'child_process'
 import { join } from 'path'
 import { songsDir, userDataDir } from './env'
-import { DEFAULT_STEMS, type Song, type StemPanMap, type StemId } from '../shared/types'
+import { KEY_NAMES } from '../shared/keys'
+import { clampPitch } from '../shared/pitch-range'
+import { DEFAULT_STEMS, type Song, type SongKey, type StemPanMap, type StemId } from '../shared/types'
 
 function libraryFile(): string {
   return join(userDataDir(), 'library.json')
@@ -62,6 +64,27 @@ export function touchSong(videoId: string): void {
   if (song.lastPlayedAt && now - song.lastPlayedAt < 5 * 60 * 1000) return
   song.lastPlayedAt = now
   saveSongs(songs)
+}
+
+// rewrites only this song's entry, keeping its place in the list; a song
+// removed while detection ran must not be resurrected, hence null + no write
+export function patchSongKey(videoId: string, key: SongKey): Song | null {
+  const songs = loadSongs()
+  const song = songs.find((s) => s.videoId === videoId)
+  if (!song) return null
+  song.key = key
+  saveSongs(songs)
+  return song
+}
+
+export function setKeyOverride(videoId: string, override: string | null): SongKey {
+  if (override !== null && !KEY_NAMES.includes(override)) throw new Error('Unknown key')
+  const song = loadSongs().find((s) => s.videoId === videoId)
+  if (!song) throw new Error('Unknown song')
+  const { override: _old, ...rest } = song.key ?? { detected: null }
+  const key: SongKey = override === null ? rest : { ...rest, override }
+  patchSongKey(videoId, key)
+  return key
 }
 
 export function removeSong(videoId: string): Song[] {
@@ -139,6 +162,14 @@ export function stemsFor(song?: Song | null): string[] {
   return song?.stems?.length ? song.stems : DEFAULT_STEMS
 }
 
+// the renderer may ask for a subset (export reads only the checked stems);
+// anything not among the song's own stems is dropped, never read from disk
+export function requestedStems(song: Song | null | undefined, requested: unknown): string[] {
+  const all = stemsFor(song)
+  if (!Array.isArray(requested)) return all
+  return all.filter((id) => requested.includes(id))
+}
+
 function panSong(videoId: string): Song {
   const song = loadSongs().find((s) => s.videoId === videoId)
   if (!song || typeof videoId !== 'string' || !/^[\w-]+$/.test(videoId)) {
@@ -165,6 +196,13 @@ function normalizePan(song: Song, value: unknown): StemPanMap {
   return pans
 }
 
+// the rendered mix, or null while it hasn't been produced
+export function loadMix(videoId: string): Buffer | null {
+  panSong(videoId)
+  const file = mixWavPath(videoId)
+  return existsSync(file) ? readFileSync(file) : null
+}
+
 export function loadStemPan(videoId: string): StemPanMap {
   const song = panSong(videoId)
   try {
@@ -184,6 +222,21 @@ export function saveStemPan(videoId: string, pans: unknown): void {
 /* A stem is kept as FLAC, or as float WAV for songs from before stems were
    compressed and for the rare stem that goes over full scale. This finds
    whichever is there, FLAC first. */
+export function loadPitch(videoId: string): number {
+  panSong(videoId)
+  try {
+    return clampPitch(JSON.parse(readFileSync(join(songDir(videoId), 'pitch.json'), 'utf8')).semitones)
+  } catch {
+    return 0
+  }
+}
+
+export function savePitch(videoId: string, semitones: unknown): void {
+  panSong(videoId)
+  // Do not recreate a deleted song directory for a late player save.
+  writeFileSync(join(songDir(videoId), 'pitch.json'), JSON.stringify({ semitones: clampPitch(semitones) }, null, 2))
+}
+
 export function stemFile(videoId: string, name: string): string | null {
   const dir = stemsDir(videoId)
   for (const ext of ['flac', 'wav']) {

@@ -8,7 +8,7 @@ import {
   type MenuItemConstructorOptions
 } from 'electron'
 import { join, normalize, extname } from 'path'
-import { existsSync, copyFileSync, createReadStream, statSync } from 'fs'
+import { existsSync, mkdirSync, copyFileSync, createReadStream, statSync } from 'fs'
 import { createServer, type Server } from 'http'
 import type { AddressInfo } from 'net'
 import type { AppSettings } from '../shared/types'
@@ -30,10 +30,12 @@ import {
 } from './env'
 import { loadSettings, saveSettings } from './settings'
 import {
-  loadSongs, removeSong, clearLibrary, stemBuffers, stemsDir, stemsFor, sanitizeName,
-  exportStems, transcodeToAac, loadStemPan, saveStemPan
+  loadSongs, removeSong, clearLibrary, stemBuffers, requestedStems, stemsDir, sanitizeName,
+  loadMix, transcodeToAac, loadStemPan, saveStemPan, loadPitch, savePitch, setKeyOverride
 } from './library'
 import { AUDIO_EXTENSIONS } from '../shared/local'
+import { openSession, writeToSession, closeSession, canReveal } from './export-session'
+import { detectOnce } from './keydetect'
 import { startJob, startLocalJob, cancelJob, searchYouTube } from './pipeline'
 import { initUpdater } from './updater'
 import { runSmoke } from './smoke'
@@ -234,6 +236,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('library:list', () => loadSongs())
   ipcMain.handle('song:pan:get', (_e, videoId: string) => loadStemPan(videoId))
   ipcMain.handle('song:pan:set', (_e, videoId: string, pans: unknown) => saveStemPan(videoId, pans))
+  ipcMain.handle('song:pitch:get', (_e, videoId: string) => loadPitch(videoId))
+  ipcMain.handle('song:pitch:set', (_e, videoId: string, semitones: unknown) => savePitch(videoId, semitones))
+  ipcMain.handle('song:key:detect', (_e, videoId: string, force?: unknown) =>
+    detectOnce(videoId, undefined, { force: force === true })
+  )
+  ipcMain.handle('song:key:set', (_e, videoId: string, override: string | null) =>
+    setKeyOverride(videoId, override)
+  )
   ipcMain.handle('library:delete', (_e, videoId: string) => removeSong(videoId))
   ipcMain.handle('library:clear', () => {
     // cancel first: a running job would keep writing into the folder we are
@@ -241,9 +251,9 @@ app.whenReady().then(async () => {
     cancelJob()
     clearLibrary()
   })
-  ipcMain.handle('song:buffers', (_e, videoId: string) => {
+  ipcMain.handle('song:buffers', (_e, videoId: string, stems?: unknown) => {
     const song = loadSongs().find((s) => s.videoId === videoId)
-    return stemBuffers(videoId, song?.stems)
+    return stemBuffers(videoId, requestedStems(song, stems))
   })
 
   ipcMain.handle('jobs:start', async (_e, url: string, model?: string, stems?: string[]) => {
@@ -298,31 +308,45 @@ app.whenReady().then(async () => {
     return { saved: true, path: result.filePath }
   })
 
-  ipcMain.handle('stems:export-all', async (_e, videoId: string) => {
-    const song = loadSongs().find((s) => s.videoId === videoId)
-    const list = stemsFor(song)
-    const dir = stemsDir(videoId)
-    for (const name of list) {
-      if (!existsSync(join(dir, `${name}.wav`))) throw new Error(`Missing stem ${name}`)
+  ipcMain.handle('export:begin', async (_e, kind: 'file' | 'folder', name: string) => {
+    const format = loadSettings().exportFormat
+    // a broken ffmpeg should stop an AAC export before the picker and the render, not after
+    if (format === 'aac') requireExportFfmpeg()
+    const ext = format === 'aac' ? 'm4a' : 'wav'
+    const safe = sanitizeName(String(name))
+    if (kind === 'file') {
+      const result = await dialog.showSaveDialog({
+        title: 'Export audio',
+        defaultPath: join(app.getPath('downloads'), `${safe}.${ext}`),
+        filters: [{ name: format === 'aac' ? 'AAC audio' : 'WAV audio', extensions: [ext] }]
+      })
+      if (result.canceled || !result.filePath) return null
+      return { token: openSession('file', result.filePath, format), path: result.filePath }
     }
     const result = await dialog.showOpenDialog({
       title: 'Choose export folder',
       buttonLabel: 'Export Here',
       properties: ['openDirectory', 'createDirectory']
     })
-    if (result.canceled || !result.filePaths[0]) return { saved: false }
-    const format = loadSettings().exportFormat
-    const ffmpeg = format === 'aac' ? requireExportFfmpeg() : null
-    const { path, count } = await exportStems(
-      videoId,
-      song?.title ?? videoId,
-      list,
-      result.filePaths[0],
-      format,
-      ffmpeg
-    )
-    return { saved: true, path, count }
+    if (result.canceled || !result.filePaths[0]) return null
+    const dir = join(result.filePaths[0], safe)
+    mkdirSync(dir, { recursive: true })
+    return { token: openSession('folder', dir, format), path: dir }
   })
+  ipcMain.handle(
+    'export:write',
+    (_e, token: string, fileName: string | null, wav: Uint8Array) => {
+      return writeToSession(token, fileName, wav, (src, dest) =>
+        transcodeToAac(requireExportFfmpeg(), src, dest)
+      )
+    }
+  )
+  ipcMain.handle('export:end', (_e, token: string) => closeSession(token))
+  ipcMain.handle('export:reveal', (_e, path: unknown) => {
+    if (!canReveal(path)) throw new Error('Not an exported file')
+    shell.showItemInFolder(path)
+  })
+  ipcMain.handle('song:mix', (_e, videoId: string) => loadMix(videoId))
 
   ipcMain.handle('search:youtube', (_e, query: string) => searchYouTube(query))
   ipcMain.handle('app:version', () => app.getVersion())

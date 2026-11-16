@@ -33,9 +33,15 @@ import {
   songDir,
   sourceFile,
   stemFile,
+  loadPitch,
+  savePitch,
+  setKeyOverride,
   stemsFor,
-  touchSong
+  touchSong,
+  transcodeToAac
 } from '../main/library'
+import { beginExport, endExport, exportBundle, exportFiles, sweepExports, writeExport } from './exports'
+import { detectKey } from './key'
 import { STEM_FORMATS, STEM_FORMAT_SETTING, wavCopy } from './storage'
 import {
   DEFAULT_PICTURE,
@@ -461,39 +467,135 @@ route('GET', '/api/songs/:videoId/stems/:stem', async (req, res, params, url) =>
   createReadStream(file).pipe(res)
 })
 
-route('GET', '/api/songs/:videoId/export.zip', async (_req, res, params) => {
-  const videoId = videoIdParam(params)
-  const song = loadSongs().find((s) => s.videoId === videoId)
-  const title = sanitizeName(song?.title ?? videoId)
-  // FLAC stems are turned back into WAV next to the song rather than in the
-  // container's /tmp, which on Unraid lives inside the small docker image
-  const scratch = exportScratch(videoId)
+/* upstream's export dialog renders in the browser and hands each WAV over
+   through a session (see exports.ts); the finished export then downloads
+   from GET /api/export/:token */
+const EXPORT_TOKEN = /^[0-9a-f-]{36}$/
+
+function exportParam(params: Params) {
+  const token = params.token
+  const bundle = EXPORT_TOKEN.test(token) ? exportBundle(token) : undefined
+  if (!bundle) throw new HttpError(404, 'Unknown or expired export')
+  return bundle
+}
+
+async function readBody(req: IncomingMessage, limit: number): Promise<Uint8Array> {
+  let size = 0
+  const chunks: Buffer[] = []
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length
+    if (size > limit) throw new HttpError(413, 'Request body too large')
+    chunks.push(chunk as Buffer)
+  }
+  return new Uint8Array(Buffer.concat(chunks))
+}
+
+route('POST', '/api/export', async (req) => {
+  const body = await readJson(req)
+  const kind = body.kind === 'folder' ? 'folder' : body.kind === 'file' ? 'file' : null
+  if (!kind) throw new HttpError(400, 'Unknown export kind')
+  const name = typeof body.name === 'string' ? body.name : ''
+  const format = loadSettings().exportFormat
+  // aac needs ffmpeg; failing here beats failing after a long render
+  if (format === 'aac') needFfmpeg()
+  const bundle = beginExport(kind, name, format)
+  return { token: bundle.token, path: `/api/export/${bundle.token}` }
+})
+
+route('PUT', '/api/export/:token/file', async (req, _res, params, url) => {
+  const bundle = exportParam(params)
+  const name = url.searchParams.get('name')
+  if (bundle.kind === 'folder' && !(name && STEM_NAME.test(name))) throw new HttpError(400, 'Missing file name')
+  const wav = await readBody(req, MAX_UPLOAD_BYTES)
   try {
-    const entries: ZipEntry[] = []
-    for (const name of stemsFor(song)) {
-      const stored = stemFile(videoId, name)
-      if (!stored) throw new HttpError(404, `Missing stem ${name}`)
-      entries.push({ name: `${title}/${name}.wav`, path: await wavCopy(needFfmpeg(), stored, scratch) })
-    }
-    // the audio the song was split from, as it was downloaded
-    const source = sourceFile(videoId)
-    if (source) entries.push({ name: `${title}/${title}${extname(source)}`, path: source })
+    await writeExport(bundle.token, bundle.kind === 'folder' ? name : null, wav, (src, dest) =>
+      transcodeToAac(needFfmpeg(), src, dest)
+    )
+  } catch (err) {
+    if (err instanceof HttpError) throw err
+    throw new HttpError(400, err instanceof Error ? err.message : String(err))
+  }
+  return null
+})
+
+route('POST', '/api/export/:token/end', async (_req, _res, params) => {
+  endExport(exportParam(params).token)
+  return null
+})
+
+route('GET', '/api/export/:token', async (_req, res, params) => {
+  const bundle = exportParam(params)
+  const files = exportFiles(bundle)
+  if (files.length === 0) throw new HttpError(404, 'Nothing was exported')
+  if (bundle.kind === 'file') {
+    const file = files[0]
     res.writeHead(200, {
-      'Content-Type': 'application/zip',
-      'Content-Length': zipSize(entries),
-      'Content-Disposition': attachment(`${title}.zip`),
+      'Content-Type': bundle.ext === 'm4a' ? 'audio/mp4' : 'audio/wav',
+      'Content-Length': statSync(file.path).size,
+      'Content-Disposition': attachment(file.name),
       'Cache-Control': 'no-store'
     })
-    try {
-      await writeZip(res, entries)
-      res.end()
-    } catch (err) {
-      console.error(`[export] ${videoId}: ${err instanceof Error ? err.message : String(err)}`)
-      res.destroy()
-    }
-  } finally {
-    rmSync(scratch, { recursive: true, force: true })
+    createReadStream(file.path).pipe(res)
+    return
   }
+  const entries: ZipEntry[] = files
+  res.writeHead(200, {
+    'Content-Type': 'application/zip',
+    'Content-Length': zipSize(entries),
+    'Content-Disposition': attachment(`${bundle.name}.zip`),
+    'Cache-Control': 'no-store'
+  })
+  try {
+    await writeZip(res, entries)
+    res.end()
+  } catch (err) {
+    console.error(`[export] ${bundle.name}: ${err instanceof Error ? err.message : String(err)}`)
+    res.destroy()
+  }
+})
+
+/* the audio the song was split from, for "Original mix" in the export dialog */
+route('GET', '/api/songs/:videoId/mix', async (_req, res, params) => {
+  const source = sourceFile(videoIdParam(params))
+  if (!source) throw new HttpError(404, 'This song has no original mix')
+  res.writeHead(200, {
+    'Content-Type': 'application/octet-stream',
+    'Content-Length': statSync(source).size,
+    'Cache-Control': 'no-store'
+  })
+  createReadStream(source).pipe(res)
+})
+
+route('POST', '/api/songs/:videoId/key', async (req, _res, params) => {
+  const videoId = videoIdParam(params)
+  const body = await readJson(req)
+  return detectKey(videoId, body.force === true)
+})
+
+route('PUT', '/api/songs/:videoId/key', async (req, _res, params) => {
+  const videoId = videoIdParam(params)
+  const body = await readJson(req)
+  const override = typeof body.override === 'string' ? body.override : null
+  try {
+    return setKeyOverride(videoId, override)
+  } catch (err) {
+    throw new HttpError(400, err instanceof Error ? err.message : String(err))
+  }
+})
+
+route('GET', '/api/songs/:videoId/pitch', async (_req, _res, params) => ({
+  semitones: loadPitch(videoIdParam(params))
+}))
+
+route('PUT', '/api/songs/:videoId/pitch', async (req, _res, params) => {
+  const videoId = videoIdParam(params)
+  const body = await readJson(req)
+  try {
+    savePitch(videoId, body.semitones)
+  } catch (err) {
+    throw new HttpError(400, err instanceof Error ? err.message : String(err))
+  }
+  return null
 })
 
 /* a folder of its own per request, so two exports of one song never share */
@@ -757,6 +859,8 @@ async function startup(): Promise<void> {
   void compactLibrary()
   pruneUploads()
   setInterval(pruneUploads, 6 * 60 * 60 * 1000).unref()
+  // finished exports wait a while for their download, then go
+  setInterval(() => sweepExports(), 10 * 60 * 1000).unref()
   if (!getStatus().ready) return
   const gpu = await hasGpuAcceleration()
   void detectGpuVendor()
