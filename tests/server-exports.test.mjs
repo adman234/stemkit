@@ -62,6 +62,39 @@ test('aac exports transcode through the given ffmpeg step', async () => {
   assert.equal(exports.exportFiles(bundle)[0].name, 'Song.m4a')
 })
 
+// the server streams each uploaded WAV to disk first (writeExportFile), so a
+// long song is never held in memory
+test('a streamed wav upload becomes the export file without a copy', async () => {
+  const bundle = exports.beginExport('folder', 'Streamed', 'wav')
+  const upload = exports.exportUploadPath(bundle)
+  assert.ok(upload.startsWith(bundle.dir), 'the upload sits inside the export, so the sweep owns it')
+  writeFileSync(upload, wav)
+  const dest = await exports.writeExportFile(bundle.token, 'vocals', upload, noTranscode)
+  exports.endExport(bundle.token)
+  assert.equal(existsSync(upload), false, 'renamed, not copied')
+  assert.deepEqual(new Uint8Array(readFileSync(dest)), wav)
+  assert.deepEqual(
+    exports.exportFiles(bundle).map((f) => f.name),
+    ['Streamed/vocals.wav'],
+    'the hidden upload name never shows in the download'
+  )
+})
+
+test('a streamed upload for an aac export is transcoded from the file on disk', async () => {
+  const bundle = exports.beginExport('file', 'Streamed', 'aac')
+  const upload = exports.exportUploadPath(bundle)
+  writeFileSync(upload, wav)
+  let source
+  await exports.writeExportFile(bundle.token, null, upload, async (src, dest) => {
+    source = src
+    writeFileSync(dest, 'm4a')
+  })
+  exports.endExport(bundle.token)
+  assert.equal(source, upload)
+  assert.equal(exports.exportFiles(bundle)[0].name, 'Streamed.m4a')
+  await assert.rejects(exports.writeExportFile('no-such-token', null, upload, noTranscode), /Unknown export session/)
+})
+
 test('the sweep removes expired exports and folders a restart left behind', () => {
   const bundle = exports.beginExport('file', 'Old', 'wav')
   const orphan = join(exports.exportsRoot(), 'left-over')

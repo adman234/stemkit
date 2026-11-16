@@ -100,6 +100,8 @@ driver loaded. This image has not been tested on AMD hardware yet.
 | --- | --- | --- |
 | `STEMKIT_PASSWORD` | empty | Turns on HTTP basic auth. There is no login otherwise, so keep the port on your LAN or behind a reverse proxy |
 | `STEMKIT_USERNAME` | empty | Username for basic auth. Empty accepts any username |
+| `STEMKIT_ALLOWED_HOSTS` | empty | Only checked when there is no password. Without one, the server answers to IP addresses, `localhost`, bare names like `tower`, and names ending in `.local`, `.lan`, `.home`, `.home.arpa` or `.internal`; any other name gets a 421, which stops a website from re-pointing its own name at your server (DNS rebinding). If you reach StemKit through a reverse proxy at a public name, list it here, comma separated (`stemkit.example.com`, or `.example.com` for a whole domain). `*` turns the check off |
+| `STEMKIT_MAX_JOBS` | `2` | How many GPU jobs run at once: splits, and chord, YourMT3 note and lyrics-alignment runs started on their own. Lower it if a small card runs out of memory |
 | `YTDLP_AUTO_UPDATE` | `true` | Installs the newest yt-dlp into `/config/python-overrides` at start |
 | `STEMKIT_ATTENTION` | `efficient` | CUDA attention kernel for the studio vocals model: `efficient`, `flash` or `math` |
 | `STEMKIT_MAX_UPLOAD_MB` | `1024` | Largest audio file the upload button accepts |

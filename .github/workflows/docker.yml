@@ -4,7 +4,10 @@ name: docker
 #   main        -> ghcr.io/<owner>/stemkit:latest
 #   other branch -> ghcr.io/<owner>/stemkit:<branch>
 #   tag v1.2.3  -> ghcr.io/<owner>/stemkit:1.2.3
-# and the same again with -rocm on the end for the AMD (ROCm) image
+# and the same again with -rocm on the end for the AMD (ROCm) image.
+# Every image is started and has to answer before it is pushed. Renovate's
+# branches are built and smoke tested but never pushed: a multi-GB image per
+# dependency bump is what filled the registry
 on:
   push:
     branches: ['**']
@@ -85,7 +88,40 @@ jobs:
           flavor: |
             suffix=${{ matrix.gpu == 'rocm' && '-rocm' || '' }},onlatest=true
 
-      - uses: docker/build-push-action@v6
+      # built into the runner's docker first, so the image can be started
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            GPU=${{ matrix.gpu }}
+          tags: stemkit:smoke
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.gpu }}
+
+      # no GPU on the runner, which the server takes in its stride: it has to
+      # come up, answer /healthz, and find python, ffmpeg and the engine
+      # scripts (/api/status ready)
+      - name: Smoke test
+        run: |
+          docker run -d --name smoke -p 8080:8080 stemkit:smoke
+          fail() { echo "::error::$1"; docker logs smoke; exit 1; }
+          for _ in $(seq 1 60); do
+            curl -fs http://127.0.0.1:8080/healthz >/dev/null && break
+            sleep 2
+          done
+          curl -fs http://127.0.0.1:8080/healthz >/dev/null || fail "the server never answered /healthz"
+          status="$(curl -fs http://127.0.0.1:8080/api/status)" || fail "/api/status failed"
+          echo "$status" | jq .
+          echo "$status" | jq -e '.ready == true' >/dev/null || fail "the engine is not ready inside the image"
+          docker rm -f smoke
+          docker image rm stemkit:smoke
+
+      # the same build again, all from the builder's cache, this time pushed
+      - name: Push
+        if: ${{ !startsWith(github.ref_name, 'renovate/') }}
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true

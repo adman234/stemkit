@@ -10,9 +10,12 @@ umask "${UMASK:-022}"
 : "${STEMKIT_SONGS:=$STEMKIT_DATA/songs}"
 : "${STEMKIT_MODELS:=$STEMKIT_DATA/models}"
 : "${TORCH_HOME:=$STEMKIT_MODELS/torch}"
-export STEMKIT_SONGS STEMKIT_MODELS TORCH_HOME
+# anything the python side pulls through the Hugging Face libraries lands
+# beside the other checkpoints instead of in the general cache
+: "${HF_HOME:=$STEMKIT_MODELS/huggingface}"
+export STEMKIT_SONGS STEMKIT_MODELS TORCH_HOME HF_HOME
 
-mkdir -p "$STEMKIT_DATA" "$STEMKIT_SONGS" "$STEMKIT_MODELS" "$HOME" "$XDG_CACHE_HOME" "$TORCH_HOME"
+mkdir -p "$STEMKIT_DATA" "$STEMKIT_SONGS" "$STEMKIT_MODELS" "$HOME" "$XDG_CACHE_HOME" "$TORCH_HOME" "$HF_HOME"
 
 # anything already inside the data folder is covered by the sweep over it
 OWNED="$STEMKIT_DATA"

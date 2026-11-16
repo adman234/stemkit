@@ -1,5 +1,6 @@
 import { spawn, execFile } from 'child_process'
-import { existsSync, mkdirSync, createWriteStream, statSync, renameSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, createReadStream, createWriteStream, statSync, renameSync, readFileSync, rmSync } from 'fs'
+import { createHash } from 'crypto'
 import { once } from 'events'
 import { Readable } from 'stream'
 import { delimiter, dirname, join, resolve } from 'path'
@@ -368,11 +369,34 @@ export async function ensureEngineDeps(): Promise<boolean> {
   }
 }
 
+async function sha256File(file: string): Promise<string> {
+  const hash = createHash('sha256')
+  for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer)
+  return hash.digest('hex')
+}
+
+/* the checkpoints are pickles torch loads with weights_only off, so a file
+   swapped upstream (or cut short and resumed wrongly) would run as code.
+   Each one is pinned to a revision and checked against its known hash before
+   it takes its final name; a mismatch is thrown away so the retry starts
+   clean */
+async function finishDownload(part: string, dest: string, label: string, sha256?: string): Promise<void> {
+  if (sha256) {
+    const got = await sha256File(part)
+    if (got !== sha256) {
+      rmSync(part, { force: true })
+      throw new Error(`${label} failed its checksum (got ${got.slice(0, 12)}…, expected ${sha256.slice(0, 12)}…)`)
+    }
+  }
+  renameSync(part, dest)
+}
+
 export async function downloadTo(
   url: string,
   dest: string,
   label: string,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  sha256?: string
 ): Promise<void> {
   // download into <dest>.part so an interrupted fetch can resume and a
   // partial file is never mistaken for the real one; rename on success
@@ -384,7 +408,7 @@ export async function downloadTo(
   })
   if (res.status === 416 && base > 0) {
     // the .part already holds the whole file (killed right before the rename)
-    renameSync(part, dest)
+    await finishDownload(part, dest, label, sha256)
     onProgress?.(100)
     return
   }
@@ -413,7 +437,7 @@ export async function downloadTo(
   } finally {
     await new Promise<void>((resolve) => out.end(resolve))
   }
-  renameSync(part, dest)
+  await finishDownload(part, dest, label, sha256)
   onProgress?.(100)
 }
 
@@ -422,7 +446,8 @@ export async function downloadTo(
    split never races the download */
 const CKPT_NAME = 'MelBandRoformer.ckpt'
 const CKPT_URL =
-  'https://huggingface.co/KimberleyJSN/melbandroformer/resolve/main/MelBandRoformer.ckpt'
+  'https://huggingface.co/KimberleyJSN/melbandroformer/resolve/ac9b0614ab3cd7f77219e18ba494dfd93956c348/MelBandRoformer.ckpt'
+const CKPT_SHA256 = '87201f4d31afb5bc79993230fc49446918425574db48c01c405e44f365c7559e'
 
 export function vocalsEnginePath(): string {
   return join(modelsDir(), CKPT_NAME)
@@ -443,10 +468,16 @@ export function ensureVocalsEngine(onProgress?: (pct: number) => void): Promise<
     vocalsEnginePromise = (async () => {
       mkdirSync(modelsDir(), { recursive: true })
       sendEnvEvent('Downloading the vocals engine (~913MB, one time)')
-      await downloadTo(CKPT_URL, vocalsEnginePath(), 'vocals engine', (pct) => {
-        vocalsPct = pct
-        for (const listener of vocalsProgressListeners) listener(pct)
-      })
+      await downloadTo(
+        CKPT_URL,
+        vocalsEnginePath(),
+        'vocals engine',
+        (pct) => {
+          vocalsPct = pct
+          for (const listener of vocalsProgressListeners) listener(pct)
+        },
+        CKPT_SHA256
+      )
       sendEnvEvent('Vocals engine ready', 'success')
       return true
     })()
@@ -544,35 +575,43 @@ export function ensureFtWeights(onProgress?: (pct: number) => void): Promise<boo
 
 /* checkpoints for the web engines, fetched into the models folder on first
    use. The vocals model keeps its own downloader above, shared with the
-   desktop code path */
-const MODEL_FILES: Record<Exclude<ModelId, 'vocals'>, { file: string; url: string }> = {
+   desktop code path. Every url is pinned (a commit, a tag, or a release
+   asset whose hash is checked) and every file carries its sha256; bumping a
+   model means updating both */
+const MODEL_FILES: Record<Exclude<ModelId, 'vocals'>, { file: string; url: string; sha256: string }> = {
   sw: {
     file: 'BS-Roformer-SW.ckpt',
-    url: 'https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/BS-Roformer-SW.ckpt'
+    url: 'https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/BS-Roformer-SW.ckpt',
+    sha256: '24e7d35ee9c64415673d3fd33e06a67cac2c103c5df6267ba1576459c775916e'
   },
   drumsep: {
     file: 'MDX23C-DrumSep-aufr33-jarredou.ckpt',
-    url: 'https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/MDX23C-DrumSep-aufr33-jarredou.ckpt'
+    url: 'https://github.com/nomadkaraoke/python-audio-separator/releases/download/model-configs/MDX23C-DrumSep-aufr33-jarredou.ckpt',
+    sha256: 'd2a4aa53eb584d21eead358a4e66d1882ad182911be018f052b5da73be9096d0'
   },
   chords: {
     file: 'btc_model_large_voca.ckpt',
-    url: 'https://raw.githubusercontent.com/jayg996/BTC-ISMIR19/master/test/btc_model_large_voca.pt'
+    url: 'https://raw.githubusercontent.com/jayg996/BTC-ISMIR19/2682317be668032e6e4b269ded36adaa2ad57df0/test/btc_model_large_voca.pt',
+    sha256: '1673d23f8f9a55ae7f9e8b80a51da616debb22675b8d8b67ea6ce0ef37b0ab51'
   },
   notes: {
     file: 'basic-pitch-icassp2022.onnx',
-    url: 'https://raw.githubusercontent.com/spotify/basic-pitch/v0.4.0/basic_pitch/saved_models/icassp_2022/nmp.onnx'
+    url: 'https://raw.githubusercontent.com/spotify/basic-pitch/v0.4.0/basic_pitch/saved_models/icassp_2022/nmp.onnx',
+    sha256: '2c3c1d144bfa61ad236e92e169c13535c880469a12a047d4e73451f2c059a0ec'
   },
   // the YPTF.MoE+Multi (noPS) checkpoint from the authors' Hugging Face Space,
   // pinned so a change there cannot swap what runs here. The model code is
   // fetched separately by notes_ymt3.py on first use (same revision)
   'notes-ymt3': {
     file: 'yourmt3-yptf-moe-multi-nops.ckpt',
-    url: 'https://huggingface.co/spaces/mimbres/YourMT3/resolve/5e66c1ea173a8186e0d20432b841d3180cc015b5/amt/logs/2024/mc13_256_g4_all_v7_mt3f_sqr_rms_moe_wf4_n8k2_silu_rope_rp_b36_nops/checkpoints/last.ckpt'
+    url: 'https://huggingface.co/spaces/mimbres/YourMT3/resolve/5e66c1ea173a8186e0d20432b841d3180cc015b5/amt/logs/2024/mc13_256_g4_all_v7_mt3f_sqr_rms_moe_wf4_n8k2_silu_rope_rp_b36_nops/checkpoints/last.ckpt',
+    sha256: 'ae38e415c79efd5592dcb9b658cdb99ddb11d4c4e1eaa364cab04a052473fc25'
   },
   // facebook/wav2vec2-base-960h, pinned, for lyrics forced alignment
   lyrics: {
     file: 'wav2vec2-base-960h.safetensors',
-    url: 'https://huggingface.co/facebook/wav2vec2-base-960h/resolve/22aad52d435eb6dbaf354bdad9b0da84ce7d6156/model.safetensors'
+    url: 'https://huggingface.co/facebook/wav2vec2-base-960h/resolve/22aad52d435eb6dbaf354bdad9b0da84ce7d6156/model.safetensors',
+    sha256: '8aa76ab2243c81747a1f832954586bc566090c83a0ac167df6f31f0fa917d74a'
   }
 }
 
@@ -599,10 +638,16 @@ export function ensureModel(id: ModelId, onProgress?: (pct: number) => void): Pr
     promise = (async () => {
       mkdirSync(modelsDir(), { recursive: true })
       sendEnvEvent(`Downloading ${name} (${sizeMb} MB, one time)`)
-      await downloadTo(MODEL_FILES[id].url, modelPath(id), `${name}`, (pct) => {
-        modelProgress.set(id, pct)
-        for (const listener of modelListeners.get(id) ?? []) listener(pct)
-      })
+      await downloadTo(
+        MODEL_FILES[id].url,
+        modelPath(id),
+        `${name}`,
+        (pct) => {
+          modelProgress.set(id, pct)
+          for (const listener of modelListeners.get(id) ?? []) listener(pct)
+        },
+        MODEL_FILES[id].sha256
+      )
       sendEnvEvent(`${name} ready`, 'success')
       return true
     })()

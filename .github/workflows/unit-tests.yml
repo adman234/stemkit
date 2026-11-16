@@ -2,7 +2,8 @@ name: unit-tests
 
 # fast checks that need no engine or display: the node:test suites
 # (test:audio), both TypeScript projects and the numpy-only python tests
-# (test:py). The smoke workflows cover the app end to end on tags
+# (test:py). The docker workflow starts each built image and checks that
+# the server answers
 
 on:
   pull_request:

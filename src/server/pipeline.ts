@@ -210,7 +210,7 @@ export async function detectChords(videoId: string): Promise<void> {
     if (!ok) throw new Error('Could not download the chord model')
     const { paths, source } = chordInputs(videoId)
     const gpu = loadSettings().gpuSplit && (await hasGpuAcceleration())
-    await runChords(videoId, paths, source, gpu ? 'cuda' : 'cpu')
+    await withEngine(() => runChords(videoId, paths, source, gpu ? 'cuda' : 'cpu'))
     broadcast('chords:event', { videoId, ready: true })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -316,7 +316,9 @@ export async function transcribe(
       `stem: ${stem}`
     ]
     if (info.heavy) args.push('--device', gpu ? 'cuda' : 'cpu')
-    await runProcess({ videoId, tag: 'notes', cancelled: false, standalone: true }, venvPython(), args)
+    const run = (): Promise<void> =>
+      runProcess({ videoId, tag: 'notes', cancelled: false, standalone: true }, venvPython(), args)
+    await (info.heavy ? withEngine(run) : run())
     broadcast('notes:event', { videoId, stem, model: info.id, ready: true })
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -398,8 +400,14 @@ export async function findLyrics(
       '--duration',
       String(song?.duration ?? 0)
     ]
-    if (ok && vocals) args.push('--vocals', vocals)
-    await runProcess({ videoId, tag: 'lyrics', cancelled: false, standalone: true }, venvPython(), args)
+    const run = (): Promise<void> =>
+      runProcess({ videoId, tag: 'lyrics', cancelled: false, standalone: true }, venvPython(), args)
+    if (ok && vocals) {
+      args.push('--vocals', vocals)
+      await withEngine(run)
+    } else {
+      await run()
+    }
     upsertSong({ ...(song ?? { videoId, title: '', duration: 0, addedAt: Date.now() }), lyrics: true })
     broadcast('lyrics:event', { videoId, ready: true })
   } catch (err) {
@@ -421,6 +429,12 @@ function maybeAutoLyrics(videoId: string, options: SplitOptions): void {
 }
 
 /* ---------- video for local playback ---------- */
+
+/* the one URL yt-dlp is given for a video. The id may start with '-', which
+   is why every call also ends its options with '--' */
+function watchUrl(videoId: string): string {
+  return `https://www.youtube.com/watch?v=${videoId}`
+}
 
 export function videoPath(videoId: string): string {
   return join(songDir(videoId), 'video.mp4')
@@ -451,7 +465,7 @@ export async function fetchVideo(videoId: string): Promise<void> {
     return
   }
   const height = loadSettings().videoHeight || 480
-  const url = `https://www.youtube.com/watch?v=${videoId}`
+  const url = watchUrl(videoId)
   const target = join(dir, 'video.%(ext)s')
   broadcast('video:event', { videoId, pct: 0 })
 
@@ -467,6 +481,7 @@ export async function fetchVideo(videoId: string): Promise<void> {
           '--no-playlist',
           '-o',
           target,
+          '--',
           url
         ],
         { env: process.env }
@@ -548,8 +563,13 @@ interface ActiveJob {
 
 const jobs = new Map<string, ActiveJob>()
 
-const MAX_CONCURRENT_SEPARATIONS = Math.max(1, Number(process.env.STEMKIT_MAX_JOBS ?? 2) || 2)
-let activeSeparations = 0
+/* STEMKIT_MAX_JOBS caps how many torch processes run at once: separations,
+   and the chord, YourMT3 and lyrics-alignment runs started on their own. Each
+   of those loads a model of its own onto the GPU, so leaving the extras
+   uncapped is how two splits plus their automatic lyrics run out of VRAM.
+   Work a split does inside its slot (its chords, its key) needs no second one */
+const MAX_ENGINE_JOBS = Math.max(1, Number(process.env.STEMKIT_MAX_JOBS ?? 2) || 2)
+let activeEngineJobs = 0
 
 /* What a split shows beside the stems when the client does not say: the
    cover image, unless STEMKIT_PICTURE=video. The video costs a download and
@@ -557,24 +577,42 @@ let activeSeparations = 0
 export const DEFAULT_PICTURE: 'video' | 'thumbnail' = /^video$/i.test((process.env.STEMKIT_PICTURE ?? '').trim())
   ? 'video'
   : 'thumbnail'
-const separationWaiters: Array<() => void> = []
+const engineWaiters: Array<() => void> = []
 
-function acquireSeparation(): Promise<() => void> {
-  if (activeSeparations < MAX_CONCURRENT_SEPARATIONS) {
-    activeSeparations++
-    return Promise.resolve(releaseSeparation)
+function acquireEngine(): Promise<() => void> {
+  // each grant gets its own release, so a double call cannot free two slots
+  const grant = (): (() => void) => {
+    activeEngineJobs++
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      activeEngineJobs--
+      engineWaiters.shift()?.()
+    }
   }
+  if (activeEngineJobs < MAX_ENGINE_JOBS) return Promise.resolve(grant())
   return new Promise((resolve) => {
-    separationWaiters.push(() => {
-      activeSeparations++
-      resolve(releaseSeparation)
-    })
+    engineWaiters.push(() => resolve(grant()))
   })
 }
 
-function releaseSeparation(): void {
-  activeSeparations--
-  separationWaiters.shift()?.()
+async function withEngine<T>(fn: () => Promise<T>): Promise<T> {
+  const release = await acquireEngine()
+  try {
+    return await fn()
+  } finally {
+    release()
+  }
+}
+
+/* A song whose files something is reading or writing right now. The
+   background tidy-ups (compaction, the keep-days prune) leave it alone */
+export function songBusy(videoId: string): boolean {
+  if (jobs.has(videoId) || chordJobs.has(videoId) || lyricJobs.has(videoId) || videoJobs.has(videoId)) return true
+  for (const tag of noteJobs) if (tag.startsWith(`${videoId}:`)) return true
+  for (const key of previewJobs.keys()) if (key.startsWith(`${videoId}/`)) return true
+  return false
 }
 
 function send(ev: JobEvent): void {
@@ -679,7 +717,7 @@ async function splitMix(
   mkdirSync(stemsDir(videoId), { recursive: true })
   progress(job, 'separate', 0, 'Waiting for a free engine slot…')
 
-  const release = await acquireSeparation()
+  const release = await acquireEngine()
   try {
     if (!alive(job)) return
     const gpu = loadSettings().gpuSplit && (await hasGpuAcceleration())
@@ -750,8 +788,7 @@ export async function startJob(
   stems?: string[],
   rawOptions?: unknown
 ): Promise<void> {
-  const url = rawUrl.trim()
-  const videoId = parseVideoId(url)
+  const videoId = parseVideoId(rawUrl.trim())
   if (!videoId) {
     send({ kind: 'failed', data: { videoId: '', message: 'Could not parse a YouTube URL or video id out of that' } })
     return
@@ -779,9 +816,13 @@ export async function startJob(
       return
     }
     progress(job, 'metadata', 0, 'Reading video info')
+    // yt-dlp is only ever handed the canonical URL built from the parsed id:
+    // the text the user typed may carry more than the id (parseVideoId does
+    // not anchor its patterns), and yt-dlp would read the rest as options
+    const url = watchUrl(videoId)
 
     let raw = ''
-    await runProcess(job, venvYtDlp(), [...ytDlpRuntimeArgs(), '-J', '--no-playlist', '--skip-download', url], {
+    await runProcess(job, venvYtDlp(), [...ytDlpRuntimeArgs(), '-J', '--no-playlist', '--skip-download', '--', url], {
       onStdout: (chunk) => {
         raw += chunk
       }
@@ -815,7 +856,7 @@ export async function startJob(
     await runProcess(
       job,
       venvYtDlp(),
-      [...ytDlpRuntimeArgs(), '-f', 'bestaudio/best', '--no-playlist', '-o', rawDownloadPath(videoId), url],
+      [...ytDlpRuntimeArgs(), '-f', 'bestaudio/best', '--no-playlist', '-o', rawDownloadPath(videoId), '--', url],
       {
         onStdout: (chunk) => {
           for (const piece of chunk.split(/[\r\n]/)) {
@@ -973,6 +1014,27 @@ export function pruneUploads(maxAgeMs = 24 * 60 * 60 * 1000): void {
   }
 }
 
+/* Half-written files a restart or a crash left in song folders: the .part
+   files every ffmpeg step writes before its rename, and the scratch folders
+   a stem download makes. Nothing resumes them, so they are only taking up
+   space. Run at startup, before any job can have made one of its own;
+   model downloads keep their .part files, since those do resume */
+export function sweepPartials(): void {
+  for (const song of loadSongs()) {
+    const dir = songDir(song.videoId)
+    if (songBusy(song.videoId) || !existsSync(dir)) continue
+    for (const sub of [dir, stemsDir(song.videoId), join(dir, 'preview')]) {
+      if (!existsSync(sub)) continue
+      for (const entry of readdirSync(sub)) {
+        if (/\.part(\.\w+)?$/.test(entry) || (sub === dir && entry.startsWith('.export-'))) {
+          console.log(`[storage] removing leftover ${song.videoId}/${sub === dir ? '' : `${basename(sub)}/`}${entry}`)
+          rmSync(join(sub, entry), { recursive: true, force: true })
+        }
+      }
+    }
+  }
+}
+
 /* ---------- storage ---------- */
 
 async function compressSong(videoId: string, stems: string[]): Promise<void> {
@@ -1014,8 +1076,9 @@ export async function compactLibrary(): Promise<void> {
   try {
     for (const song of loadSongs()) {
       const { videoId } = song
-      // a song being split or analysed is still using its files
-      if (jobs.has(videoId) || chordJobs.has(videoId)) continue
+      // a song being split, analysed, transcribed or previewed is still
+      // using its files
+      if (songBusy(videoId)) continue
       const dir = songDir(videoId)
       if (!existsSync(dir)) continue
       const before = folderBytes(dir)
@@ -1023,6 +1086,8 @@ export async function compactLibrary(): Promise<void> {
 
       if (STEM_FORMAT !== 'wav') {
         for (const name of stemsFor(song)) {
+          // compressing a song takes a while; work may have started on it since
+          if (songBusy(videoId)) break
           const wav = join(stemsDir(videoId), `${name}.wav`)
           if (!existsSync(wav)) continue
           if (existsSync(wav.replace(/\.wav$/, '.flac'))) {
@@ -1039,7 +1104,7 @@ export async function compactLibrary(): Promise<void> {
 
       const mix = mixWavPath(videoId)
       const source = sourceFile(videoId)
-      if (existsSync(mix) && source === mix) {
+      if (existsSync(mix) && source === mix && !songBusy(videoId)) {
         if (await flacCopy(ffmpeg, mix, join(dir, 'source.flac'))) {
           rmSync(mix, { force: true })
           touched = true

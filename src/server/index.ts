@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'http'
-import { createReadStream, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs'
 import { extname, join, normalize, sep } from 'path'
 import { randomUUID, timingSafeEqual } from 'crypto'
 import type { AppSettings, EnvStatus } from '../shared/types'
@@ -22,6 +22,20 @@ import {
   userDataDir
 } from './env'
 import { attachClient } from './events'
+import {
+  HttpError,
+  basicCredentials,
+  compileRoute,
+  hostAllowed,
+  isCrossSite,
+  isJsonRequest,
+  matchRoute,
+  parseAllowedHosts,
+  parseRange,
+  readBodyToFile,
+  streamFile,
+  type Params
+} from './http'
 import { writeZip, zipSize, type ZipEntry } from './zip'
 // desktop main-process modules, reused as-is (see scripts/build-server.mjs)
 import { loadSettings, migrateSettings, saveSettings } from '../main/settings'
@@ -40,7 +54,7 @@ import {
   touchSong,
   transcodeToAac
 } from '../main/library'
-import { beginExport, endExport, exportBundle, exportFiles, sweepExports, writeExport } from './exports'
+import { beginExport, endExport, exportBundle, exportFiles, exportUploadPath, sweepExports, writeExportFile } from './exports'
 import { detectKey } from './key'
 import { STEM_FORMATS, STEM_FORMAT_SETTING, wavCopy } from './storage'
 import {
@@ -63,6 +77,8 @@ import {
   previewPath,
   pruneUploads,
   saveUpload,
+  songBusy,
+  sweepPartials,
   searchYouTube,
   startJob,
   startLocalJob,
@@ -77,6 +93,7 @@ const HOST = process.env.HOST ?? '0.0.0.0'
 const WEB_ROOT = normalize(join(APP_DIR, 'out', 'web'))
 const USERNAME = process.env.STEMKIT_USERNAME ?? ''
 const PASSWORD = process.env.STEMKIT_PASSWORD ?? ''
+const ALLOWED_HOSTS = parseAllowedHosts(process.env.STEMKIT_ALLOWED_HOSTS)
 
 // a YouTube video id, or the id localSongId gives an uploaded file
 const VIDEO_ID = /^(?:[\w-]{11}|local-[0-9a-f]{8})$/
@@ -96,16 +113,6 @@ const MIME: Record<string, string> = {
   '.map': 'application/json'
 }
 
-class HttpError extends Error {
-  constructor(
-    readonly status: number,
-    message: string
-  ) {
-    super(message)
-  }
-}
-
-type Params = Record<string, string>
 type Handler = (req: IncomingMessage, res: ServerResponse, params: Params, url: URL) => Promise<unknown>
 
 interface Route {
@@ -118,16 +125,7 @@ interface Route {
 const routes: Route[] = []
 
 function route(method: string, path: string, handler: Handler): void {
-  const keys: string[] = []
-  const pattern = new RegExp(
-    '^' +
-      path.replace(/[.]/g, '\\.').replace(/:(\w+)/g, (_m, key: string) => {
-        keys.push(key)
-        return '([^/]+)'
-      }) +
-      '$'
-  )
-  routes.push({ method, pattern, keys, handler })
+  routes.push({ method, ...compileRoute(path), handler })
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown): void {
@@ -149,6 +147,7 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
     chunks.push(chunk as Buffer)
   }
   if (size === 0) return {}
+  if (!isJsonRequest(req)) throw new HttpError(415, 'Expected an application/json body')
   try {
     const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
     return parsed && typeof parsed === 'object' ? parsed : {}
@@ -188,21 +187,20 @@ function sendFile(req: IncomingMessage, res: ServerResponse, file: string, conte
     'Cache-Control': 'private, no-cache',
     ETag: etag
   }
-  const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range ?? '')
+  const range = parseRange(req.headers.range, st.size)
+  if (range === 'unsatisfiable') {
+    res.writeHead(416, { 'Content-Range': `bytes */${st.size}` })
+    res.end()
+    return
+  }
   if (range) {
-    const start = range[1] ? Number(range[1]) : Math.max(0, st.size - Number(range[2]))
-    const end = range[1] && range[2] ? Math.min(Number(range[2]), st.size - 1) : st.size - 1
-    if (start >= st.size || start > end) {
-      res.writeHead(416, { 'Content-Range': `bytes */${st.size}` })
-      res.end()
-      return
-    }
+    const { start, end } = range
     res.writeHead(206, {
       ...headers,
       'Content-Range': `bytes ${start}-${end}/${st.size}`,
       'Content-Length': end - start + 1
     })
-    if (req.method !== 'HEAD') createReadStream(file, { start, end }).pipe(res)
+    if (req.method !== 'HEAD') streamFile(res, file, range)
     else res.end()
     return
   }
@@ -212,7 +210,7 @@ function sendFile(req: IncomingMessage, res: ServerResponse, file: string, conte
     return
   }
   res.writeHead(200, { ...headers, 'Content-Length': st.size })
-  if (req.method !== 'HEAD') createReadStream(file).pipe(res)
+  if (req.method !== 'HEAD') streamFile(res, file)
   else res.end()
 }
 
@@ -454,6 +452,9 @@ route('GET', '/api/songs/:videoId/stems/:stem', async (req, res, params, url) =>
   }
   // a FLAC stem goes out as WAV at its own depth, so a download is still a WAV
   const scratch = exportScratch(videoId)
+  // listening before the transcode: a client that gives up while ffmpeg is
+  // still writing would otherwise leave the folder behind
+  res.on('close', () => rmSync(scratch, { recursive: true, force: true }))
   let file: string
   try {
     file = await wavCopy(needFfmpeg(), stored, scratch)
@@ -461,10 +462,10 @@ route('GET', '/api/songs/:videoId/stems/:stem', async (req, res, params, url) =>
     rmSync(scratch, { recursive: true, force: true })
     throw err
   }
-  res.on('close', () => rmSync(scratch, { recursive: true, force: true }))
+  if (res.destroyed) return
   headers['Content-Length'] = statSync(file).size
   res.writeHead(200, headers)
-  createReadStream(file).pipe(res)
+  streamFile(res, file)
 })
 
 /* upstream's export dialog renders in the browser and hands each WAV over
@@ -477,17 +478,6 @@ function exportParam(params: Params) {
   const bundle = EXPORT_TOKEN.test(token) ? exportBundle(token) : undefined
   if (!bundle) throw new HttpError(404, 'Unknown or expired export')
   return bundle
-}
-
-async function readBody(req: IncomingMessage, limit: number): Promise<Uint8Array> {
-  let size = 0
-  const chunks: Buffer[] = []
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length
-    if (size > limit) throw new HttpError(413, 'Request body too large')
-    chunks.push(chunk as Buffer)
-  }
-  return new Uint8Array(Buffer.concat(chunks))
 }
 
 route('POST', '/api/export', async (req) => {
@@ -506,14 +496,19 @@ route('PUT', '/api/export/:token/file', async (req, _res, params, url) => {
   const bundle = exportParam(params)
   const name = url.searchParams.get('name')
   if (bundle.kind === 'folder' && !(name && STEM_NAME.test(name))) throw new HttpError(400, 'Missing file name')
-  const wav = await readBody(req, MAX_UPLOAD_BYTES)
+  // streamed to disk beside the export rather than held in memory: a long
+  // song rendered to float WAV runs to hundreds of megabytes
+  const upload = exportUploadPath(bundle)
   try {
-    await writeExport(bundle.token, bundle.kind === 'folder' ? name : null, wav, (src, dest) =>
+    await readBodyToFile(req, upload, MAX_UPLOAD_BYTES)
+    await writeExportFile(bundle.token, bundle.kind === 'folder' ? name : null, upload, (src, dest) =>
       transcodeToAac(needFfmpeg(), src, dest)
     )
   } catch (err) {
     if (err instanceof HttpError) throw err
     throw new HttpError(400, err instanceof Error ? err.message : String(err))
+  } finally {
+    rmSync(upload, { force: true })
   }
   return null
 })
@@ -535,7 +530,7 @@ route('GET', '/api/export/:token', async (_req, res, params) => {
       'Content-Disposition': attachment(file.name),
       'Cache-Control': 'no-store'
     })
-    createReadStream(file.path).pipe(res)
+    streamFile(res, file.path)
     return
   }
   const entries: ZipEntry[] = files
@@ -563,7 +558,7 @@ route('GET', '/api/songs/:videoId/mix', async (_req, res, params) => {
     'Content-Length': statSync(source).size,
     'Cache-Control': 'no-store'
   })
-  createReadStream(source).pipe(res)
+  streamFile(res, source)
 })
 
 route('POST', '/api/songs/:videoId/key', async (req, _res, params) => {
@@ -667,17 +662,23 @@ route('GET', '/api/search', async (_req, _res, _params, url) => {
   return searchYouTube(url.searchParams.get('q') ?? '')
 })
 
-/* downloadVideo is not the user's to change here: it comes from
-   STEMKIT_PICTURE, and tells the page which picture to start the split
-   panel on */
+/* Two of upstream's settings mean nothing here. downloadVideo comes from
+   STEMKIT_PICTURE and tells the page which picture to start the split panel
+   on. exportFolder is the desktop app's copy-every-split-to-a-folder option,
+   which this server's pipeline never reads, so a value carried over in a
+   desktop settings.json is hidden rather than shown as if it worked. Neither
+   is accepted from the page */
+const SERVER_OWNED_SETTINGS = ['downloadVideo', 'exportFolder'] as const
+
 function settingsForClient(settings: AppSettings): AppSettings {
-  return { ...settings, downloadVideo: DEFAULT_PICTURE === 'video' }
+  return { ...settings, downloadVideo: DEFAULT_PICTURE === 'video', exportFolder: '' }
 }
 
 route('GET', '/api/settings', async () => settingsForClient(loadSettings()))
 
 route('PUT', '/api/settings', async (req) => {
   const patch = (await readJson(req)) as Partial<AppSettings>
+  for (const key of SERVER_OWNED_SETTINGS) delete patch[key]
   const next = saveSettings(patch)
   // a settings change can flip the thumbnail source, so cached lookups retry
   clearThumbMemo()
@@ -732,7 +733,7 @@ function serveStatic(req: IncomingMessage, res: ServerResponse, pathname: string
     res.end()
     return
   }
-  createReadStream(file).pipe(res)
+  streamFile(res, file)
 }
 
 /* ---------- auth + dispatch ---------- */
@@ -745,15 +746,12 @@ function safeEqual(a: string, b: string): boolean {
 
 function authorized(req: IncomingMessage): boolean {
   if (!PASSWORD) return true
-  const header = req.headers.authorization ?? ''
-  if (!header.startsWith('Basic ')) return false
-  const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8')
-  const colon = decoded.indexOf(':')
-  if (colon < 0) return false
-  const user = decoded.slice(0, colon)
-  const pass = decoded.slice(colon + 1)
-  return (!USERNAME || safeEqual(user, USERNAME)) && safeEqual(pass, PASSWORD)
+  const creds = basicCredentials(req.headers.authorization)
+  if (!creds) return false
+  return (!USERNAME || safeEqual(creds.user, USERNAME)) && safeEqual(creds.pass, PASSWORD)
 }
+
+const rejectedHosts = new Set<string>()
 
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://localhost')
@@ -763,6 +761,19 @@ const server = createServer((req, res) => {
   } catch {
     res.writeHead(400)
     res.end()
+    return
+  }
+
+  // without a password, the Host is all that tells this server apart from a
+  // site that re-pointed its own name here (see hostAllowed)
+  if (!PASSWORD && pathname !== '/healthz' && !hostAllowed(req.headers.host, ALLOWED_HOSTS)) {
+    const host = req.headers.host ?? ''
+    if (!rejectedHosts.has(host) && rejectedHosts.size < 50) {
+      rejectedHosts.add(host)
+      console.warn(`[http] refused a request for host "${host}"; add it to STEMKIT_ALLOWED_HOSTS if it is yours`)
+    }
+    res.writeHead(421, { 'Content-Type': 'text/plain' })
+    res.end(`StemKit does not answer to "${host}". Add it to STEMKIT_ALLOWED_HOSTS, or set STEMKIT_PASSWORD.`)
     return
   }
 
@@ -782,14 +793,16 @@ const server = createServer((req, res) => {
     return
   }
 
+  // another site's page making this browser start jobs, downloads or deletes
+  if (isCrossSite(req)) {
+    sendJson(res, 403, { error: 'Cross-site request refused' })
+    return
+  }
+
   for (const r of routes) {
     if (r.method !== req.method) continue
-    const m = pathname.match(r.pattern)
-    if (!m) continue
-    const params: Params = {}
-    r.keys.forEach((key, i) => {
-      params[key] = m[i + 1]
-    })
+    const params = matchRoute(r, pathname)
+    if (!params) continue
     r.handler(req, res, params, url)
       .then((result) => {
         if (!res.headersSent) sendJson(res, 200, result)
@@ -821,7 +834,7 @@ function pruneSongs(): void {
   for (const song of loadSongs()) {
     // a song nobody has played yet is judged by when it was added
     const last = song.lastPlayedAt ?? song.addedAt
-    if (last >= cutoff) continue
+    if (last >= cutoff || songBusy(song.videoId)) continue
     removeSong(song.videoId)
     console.log(
       `[keep] removed ${song.videoId} (${song.title}), last played ${new Date(last).toISOString().slice(0, 10)}`
@@ -854,6 +867,8 @@ async function startup(): Promise<void> {
     console.log(`[stemkit] web UI on http://${HOST}:${PORT}${PASSWORD ? ' (password protected)' : ''}`)
   })
 
+  // nothing is running yet, so any half-written file is a leftover
+  sweepPartials()
   await detectTools()
   // needs ffmpeg, so it waits for the tools; the split engine can be missing
   void compactLibrary()

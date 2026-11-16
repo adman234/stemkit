@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from 'fs'
 import { randomUUID } from 'crypto'
 import { basename, join } from 'path'
 import { songsDir } from './env'
@@ -61,6 +61,30 @@ export function writeExport(
 ): Promise<string> {
   if (!bundles.has(token)) throw new Error('Unknown export session')
   return writeToSession(token, fileName, wav, transcode)
+}
+
+/* where a WAV the browser is uploading is streamed to before it joins the
+   export: inside the bundle's own folder, so the rename onto the export is
+   on the same volume and the sweep removes anything an abort leaves */
+export function exportUploadPath(bundle: ExportBundle): string {
+  return join(bundle.dir, `.upload-${randomUUID()}.wav`)
+}
+
+/* writeExport for a WAV already on disk. Upstream's session takes the bytes
+   in memory, which for a long song is hundreds of megabytes per stem; it is
+   handed none here and the file stands in for them: renamed onto the
+   destination for a WAV export, or given to the transcoder for AAC */
+export async function writeExportFile(
+  token: string,
+  fileName: string | null,
+  file: string,
+  transcode: (src: string, dest: string) => Promise<void>
+): Promise<string> {
+  const bundle = bundles.get(token)
+  if (!bundle) throw new Error('Unknown export session')
+  const dest = await writeToSession(token, fileName, new Uint8Array(0), (_empty, out) => transcode(file, out))
+  if (bundle.ext === 'wav') renameSync(file, dest)
+  return dest
 }
 
 export function endExport(token: string): void {

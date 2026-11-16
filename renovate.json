@@ -6,9 +6,18 @@
   "platformAutomerge": false,
   "packageRules": [
     {
-      "description": "Minor, patch, pin and digest updates merge automatically once unit-tests and docker pass",
-      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
-      "automerge": true
+      "description": "Minor, patch, pin and digest updates merge automatically once unit-tests and docker pass. torch and torchaudio are left for review: they are pinned to match the CUDA and ROCm wheel indexes, and a minor bump can drop a GPU build",
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "pin",
+        "digest"
+      ],
+      "automerge": true,
+      "matchPackageNames": [
+        "!torch",
+        "!torchaudio"
+      ]
     }
   ]
 }
